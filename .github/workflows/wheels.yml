@@ -46,7 +46,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/llvm-install
-        key: llvm-${{ env.LLVM_VERSION }}-${{ matrix.os }}-${{ matrix.arch }}
+        key: llvm-${{ env.LLVM_VERSION }}-${{ matrix.os }}-${{ matrix.arch }}-v2
 
     - name: Download LLVM (Linux)
       if: runner.os == 'Linux' && steps.cache-llvm.outputs.cache-hit != 'true'
@@ -55,19 +55,19 @@ jobs:
         tar -xf clang+llvm-${{ env.LLVM_VERSION }}-x86_64-linux-gnu-ubuntu-18.04.tar.xz
         mv clang+llvm-${{ env.LLVM_VERSION }}-x86_64-linux-gnu-ubuntu-18.04 llvm-install
 
-    - name: Download LLVM (macOS x86_64)
-      if: runner.os == 'macOS' && matrix.arch == 'x86_64' && steps.cache-llvm.outputs.cache-hit != 'true'
+    - name: Install LLVM via Homebrew (macOS x86_64)
+      if: runner.os == 'macOS' && matrix.arch == 'x86_64'
       run: |
-        wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VERSION }}/clang+llvm-${{ env.LLVM_VERSION }}-x86_64-apple-darwin.tar.xz
-        tar -xf clang+llvm-${{ env.LLVM_VERSION }}-x86_64-apple-darwin.tar.xz
-        mv clang+llvm-${{ env.LLVM_VERSION }}-x86_64-apple-darwin llvm-install
+        brew install llvm@18
+        echo "LLVM_DIR=$(brew --prefix llvm@18)" >> $GITHUB_ENV
+        echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm@18)" >> $GITHUB_ENV
 
     - name: Download LLVM (macOS arm64)
       if: runner.os == 'macOS' && matrix.arch == 'arm64' && steps.cache-llvm.outputs.cache-hit != 'true'
       run: |
-        wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VERSION }}/clang+llvm-${{ env.LLVM_VERSION }}-arm64-apple-darwin.tar.xz
-        tar -xf clang+llvm-${{ env.LLVM_VERSION }}-arm64-apple-darwin.tar.xz
-        mv clang+llvm-${{ env.LLVM_VERSION }}-arm64-apple-darwin llvm-install
+        wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VERSION }}/clang+llvm-${{ env.LLVM_VERSION }}-arm64-apple-macos11.tar.xz
+        tar -xf clang+llvm-${{ env.LLVM_VERSION }}-arm64-apple-macos11.tar.xz
+        mv clang+llvm-${{ env.LLVM_VERSION }}-arm64-apple-macos11 llvm-install
 
     - name: Download LLVM (Windows)
       if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
@@ -78,7 +78,8 @@ jobs:
         7z x llvm.tar
         Move-Item "clang+llvm-${{ env.LLVM_VERSION }}-x86_64-pc-windows-msvc" llvm-install
 
-    - name: Set LLVM environment
+    - name: Set LLVM environment (non-Homebrew)
+      if: "!(runner.os == 'macOS' && matrix.arch == 'x86_64')"
       shell: bash
       run: |
         echo "LLVM_DIR=${{ github.workspace }}/llvm-install" >> $GITHUB_ENV
@@ -92,8 +93,8 @@ jobs:
         CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
         CIBW_ARCHS: ${{ matrix.arch }}
         CIBW_ENVIRONMENT: >
-          LLVM_DIR=${{ github.workspace }}/llvm-install
-          CMAKE_PREFIX_PATH=${{ github.workspace }}/llvm-install
+          LLVM_DIR=${{ env.LLVM_DIR }}
+          CMAKE_PREFIX_PATH=${{ env.CMAKE_PREFIX_PATH }}
         CIBW_ENVIRONMENT_WINDOWS: >
           LLVM_DIR=${{ github.workspace }}\llvm-install
           CMAKE_PREFIX_PATH=${{ github.workspace }}\llvm-install
