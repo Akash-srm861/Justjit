@@ -45,7 +45,7 @@ jobs:
       if: runner.os == 'macOS'
       run: |
         brew install llvm@18
-        echo "LLVM_DIR=$(brew --prefix llvm@18)" >> $GITHUB_ENV
+        echo "LLVM_DIR=$(brew --prefix llvm@18)/lib/cmake/llvm" >> $GITHUB_ENV
         echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm@18)" >> $GITHUB_ENV
 
     - name: Cache LLVM (Windows)
@@ -69,7 +69,7 @@ jobs:
       if: runner.os == 'Windows'
       shell: bash
       run: |
-        echo "LLVM_DIR=${{ github.workspace }}/llvm-install" >> $GITHUB_ENV
+        echo "LLVM_DIR=${{ github.workspace }}/llvm-install/lib/cmake/llvm" >> $GITHUB_ENV
         echo "CMAKE_PREFIX_PATH=${{ github.workspace }}/llvm-install" >> $GITHUB_ENV
 
     # ===== Build Wheels =====
@@ -81,12 +81,12 @@ jobs:
         CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
         CIBW_ARCHS: ${{ matrix.arch }}
         CIBW_BEFORE_ALL_LINUX: |
-          yum install -y wget xz
+          yum install -y wget xz zlib-devel
           wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
           tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
           mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04 /opt/llvm
         CIBW_ENVIRONMENT_LINUX: >
-          LLVM_DIR=/opt/llvm
+          LLVM_DIR=/opt/llvm/lib/cmake/llvm
           CMAKE_PREFIX_PATH=/opt/llvm
         CIBW_BEFORE_BUILD: "pip install nanobind scikit-build-core cmake ninja"
         CIBW_TEST_COMMAND: "python -c \"import justjit; print(justjit.jit(lambda x: x+1)(5))\""
@@ -103,7 +103,7 @@ jobs:
           LLVM_DIR=${{ env.LLVM_DIR }}
           CMAKE_PREFIX_PATH=${{ env.CMAKE_PREFIX_PATH }}
         CIBW_ENVIRONMENT_WINDOWS: >
-          LLVM_DIR=${{ github.workspace }}\llvm-install
+          LLVM_DIR=${{ github.workspace }}\llvm-install\lib\cmake\llvm
           CMAKE_PREFIX_PATH=${{ github.workspace }}\llvm-install
         CIBW_BEFORE_BUILD: "pip install nanobind scikit-build-core cmake ninja"
         CIBW_REPAIR_WHEEL_COMMAND_MACOS: ""
