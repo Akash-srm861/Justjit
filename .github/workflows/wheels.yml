@@ -106,6 +106,7 @@ jobs:
           LLVM_DIR=${{ github.workspace }}\llvm-install
           CMAKE_PREFIX_PATH=${{ github.workspace }}\llvm-install
         CIBW_BEFORE_BUILD: "pip install nanobind scikit-build-core cmake ninja"
+        CIBW_REPAIR_WHEEL_COMMAND_MACOS: ""
         CIBW_TEST_COMMAND: "python -c \"import justjit; print(justjit.jit(lambda x: x+1)(5))\""
         CIBW_BUILD_VERBOSITY: 1
 
