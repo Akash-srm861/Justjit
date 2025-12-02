@@ -40,37 +40,24 @@ jobs:
       with:
         python-version: '3.12'
 
-    # ===== LLVM Setup =====
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@v4
-      with:
-        path: ${{ github.workspace }}/llvm-install
-        key: llvm-${{ env.LLVM_VERSION }}-${{ matrix.os }}-${{ matrix.arch }}-v2
-
-    - name: Download LLVM (Linux)
-      if: runner.os == 'Linux' && steps.cache-llvm.outputs.cache-hit != 'true'
-      run: |
-        wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VERSION }}/clang+llvm-${{ env.LLVM_VERSION }}-x86_64-linux-gnu-ubuntu-18.04.tar.xz
-        tar -xf clang+llvm-${{ env.LLVM_VERSION }}-x86_64-linux-gnu-ubuntu-18.04.tar.xz
-        mv clang+llvm-${{ env.LLVM_VERSION }}-x86_64-linux-gnu-ubuntu-18.04 llvm-install
-
-    - name: Install LLVM via Homebrew (macOS x86_64)
-      if: runner.os == 'macOS' && matrix.arch == 'x86_64'
+    # ===== LLVM Setup for non-Linux (Linux uses CIBW_BEFORE_ALL) =====
+    - name: Install LLVM via Homebrew (macOS)
+      if: runner.os == 'macOS'
       run: |
         brew install llvm@18
         echo "LLVM_DIR=$(brew --prefix llvm@18)" >> $GITHUB_ENV
         echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm@18)" >> $GITHUB_ENV
 
-    - name: Download LLVM (macOS arm64)
-      if: runner.os == 'macOS' && matrix.arch == 'arm64' && steps.cache-llvm.outputs.cache-hit != 'true'
-      run: |
-        wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VERSION }}/clang+llvm-${{ env.LLVM_VERSION }}-arm64-apple-macos11.tar.xz
-        tar -xf clang+llvm-${{ env.LLVM_VERSION }}-arm64-apple-macos11.tar.xz
-        mv clang+llvm-${{ env.LLVM_VERSION }}-arm64-apple-macos11 llvm-install
+    - name: Cache LLVM (Windows)
+      if: runner.os == 'Windows'
+      id: cache-llvm-win
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/llvm-install
+        key: llvm-${{ env.LLVM_VERSION }}-windows-v2
 
     - name: Download LLVM (Windows)
-      if: runner.os == 'Windows' && steps.cache-llvm.outputs.cache-hit != 'true'
+      if: runner.os == 'Windows' && steps.cache-llvm-win.outputs.cache-hit != 'true'
       shell: powershell
       run: |
         Invoke-WebRequest -Uri "https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VERSION }}/clang+llvm-${{ env.LLVM_VERSION }}-x86_64-pc-windows-msvc.tar.xz" -OutFile "llvm.tar.xz"
@@ -78,15 +65,35 @@ jobs:
         7z x llvm.tar
         Move-Item "clang+llvm-${{ env.LLVM_VERSION }}-x86_64-pc-windows-msvc" llvm-install
 
-    - name: Set LLVM environment (non-Homebrew)
-      if: "!(runner.os == 'macOS' && matrix.arch == 'x86_64')"
+    - name: Set LLVM environment (Windows)
+      if: runner.os == 'Windows'
       shell: bash
       run: |
         echo "LLVM_DIR=${{ github.workspace }}/llvm-install" >> $GITHUB_ENV
         echo "CMAKE_PREFIX_PATH=${{ github.workspace }}/llvm-install" >> $GITHUB_ENV
 
     # ===== Build Wheels =====
-    - name: Build wheels
+    - name: Build wheels (Linux)
+      if: runner.os == 'Linux'
+      uses: pypa/cibuildwheel@v2.21
+      env:
+        CIBW_BUILD: "cp311-* cp312-* cp313-*"
+        CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
+        CIBW_ARCHS: ${{ matrix.arch }}
+        CIBW_BEFORE_ALL_LINUX: |
+          yum install -y wget xz
+          wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+          tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+          mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04 /opt/llvm
+        CIBW_ENVIRONMENT_LINUX: >
+          LLVM_DIR=/opt/llvm
+          CMAKE_PREFIX_PATH=/opt/llvm
+        CIBW_BEFORE_BUILD: "pip install nanobind scikit-build-core cmake ninja"
+        CIBW_TEST_COMMAND: "python -c \"import justjit; print(justjit.jit(lambda x: x+1)(5))\""
+        CIBW_BUILD_VERBOSITY: 1
+
+    - name: Build wheels (macOS/Windows)
+      if: runner.os != 'Linux'
       uses: pypa/cibuildwheel@v2.21
       env:
         CIBW_BUILD: "cp311-* cp312-* cp313-*"
