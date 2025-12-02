@@ -42,7 +42,7 @@ jobs:
         python-version: '3.12'
 
     # ===== Build Wheels (Linux) =====
-    # Uses CIBW_BEFORE_ALL to install Miniconda + llvmdev inside the container
+    # Uses system LLVM from EPEL/CRB for manylinux_2_28 ABI compatibility
     - name: Build wheels (Linux)
       if: runner.os == 'Linux'
       uses: pypa/cibuildwheel@v2.21
@@ -53,22 +53,17 @@ jobs:
         CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
         CIBW_BEFORE_ALL_LINUX: |
           set -ex
-          # Install system dependencies
-          dnf install -y wget bzip2 zlib-devel libffi-devel || yum install -y wget bzip2 zlib-devel libffi-devel
-          # Install Miniconda
-          wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
-          bash /tmp/miniconda.sh -b -p /opt/conda
-          # Configure conda to only use conda-forge (avoid ToS for default channels)
-          /opt/conda/bin/conda config --remove channels defaults || true
-          /opt/conda/bin/conda config --add channels conda-forge
-          /opt/conda/bin/conda config --set channel_priority strict
-          # Install llvmdev from conda-forge (includes static libraries)
-          /opt/conda/bin/conda install -y --override-channels -c conda-forge llvmdev=18.1.8 zlib libxml2
-          # Verify installation
-          ls -la /opt/conda/lib/cmake/llvm/ || true
+          # Install LLVM development packages from EPEL/CRB for manylinux_2_28 compatibility
+          # We can't use conda-forge llvmdev as it brings newer GLIBC symbols that auditwheel rejects
+          dnf install -y epel-release || true
+          dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || true
+          dnf install -y llvm-devel llvm-static clang-devel zlib-devel libxml2-devel libffi-devel cmake ninja-build || true
+          # Verify LLVM installation
+          llvm-config --version || echo "llvm-config not found"
+          ls -la /usr/lib64/cmake/llvm/ || ls -la /usr/lib/cmake/llvm/ || true
         CIBW_ENVIRONMENT_LINUX: >-
-          LLVM_DIR=/opt/conda/lib/cmake/llvm
-          CMAKE_PREFIX_PATH=/opt/conda
+          LLVM_DIR=/usr/lib64/cmake/llvm
+          CMAKE_PREFIX_PATH=/usr
         CIBW_BEFORE_BUILD: "pip install nanobind scikit-build-core cmake ninja"
         CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair --plat manylinux_2_28_x86_64 -w {dest_dir} {wheel}"
         CIBW_TEST_COMMAND: ""
@@ -124,6 +119,12 @@ jobs:
         activate-environment: ""
         channels: conda-forge
         channel-priority: strict
+
+    - name: Setup Visual Studio environment (Windows)
+      if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
 
     - name: Install LLVM via conda-forge (Windows)
       if: runner.os == 'Windows'

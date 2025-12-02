@@ -104,6 +104,13 @@ llvm_map_components_to_libnames(LLVM_LIBS
 
 message(STATUS "LLVM libraries: ${LLVM_LIBS}")
 
+# Filter out any DIA SDK related libraries before linking (Windows-specific)
+if(WIN32)
+    list(FILTER LLVM_LIBS EXCLUDE REGEX "diaguids")
+    list(FILTER LLVM_LIBS EXCLUDE REGEX "DebugInfoPDB")
+    message(STATUS "LLVM libraries after filtering (Windows): ${LLVM_LIBS}")
+endif()
+
 # Link LLVM libraries
 target_link_libraries(_core PRIVATE ${LLVM_LIBS})
 
@@ -118,9 +125,6 @@ if(WIN32)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DEBUG:NONE")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /DEBUG:NONE")
     set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} /DEBUG:NONE")
-    
-    # Filter out any DIA SDK related libraries from LLVM_LIBS
-    list(FILTER LLVM_LIBS EXCLUDE REGEX "diaguids")
     
     target_link_libraries(_core PRIVATE
         psapi
