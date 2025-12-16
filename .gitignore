@@ -7,10 +7,10 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv/
 venv/
 env/
-build/
+test_venv/
 # CMake
 CMakeCache.txt
 CMakeFiles/
@@ -76,10 +76,9 @@ presentation-web/
 # Package lock
 package-lock.json
 
-# Documentation (generated)
-CFG_IMPLEMENTATION_PLAN.md
+# Old documentation (replaced by README)
+IMPLEMENTATION_PLAN.md
 OPCODES.md
-docs/ASYNC_IMPLEMENTATION_RESEARCH.md
 
 #uv-files
 uv.lock

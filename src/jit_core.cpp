@@ -13,6 +13,8 @@
 #include <llvm/Transforms/Utils.h>
 #include <unordered_map>
 #include <vector>
+#include <set>
+#include <map>
 #include <cstdint>
 #include <sstream>
 
@@ -27,6 +29,12 @@
 extern "C" void jit_xincref(PyObject *obj)
 {
     Py_XINCREF(obj);
+}
+
+// C helper function for NULL-safe Py_XDECREF (since Py_XDECREF is a macro)
+extern "C" void jit_xdecref(PyObject *obj)
+{
+    Py_XDECREF(obj);
 }
 
 // C helper function for CALL_KW opcode
@@ -295,6 +303,56 @@ extern "C" PyObject *_PyJIT_MatchClass(PyObject *subject, PyObject *cls, int nar
     return attrs;
 }
 
+// Debug helper function for tracing generator execution
+// Prints offset, opcode name, stack depth, and optionally a value
+extern "C" void jit_debug_trace(int offset, const char* opname, int stack_depth, PyObject* value)
+{
+    fprintf(stderr, "[JIT TRACE] @%d %s | stack_depth=%d", offset, opname, stack_depth);
+    if (value != NULL) {
+        PyObject* repr = PyObject_Repr(value);
+        if (repr != NULL) {
+            const char* repr_str = PyUnicode_AsUTF8(repr);
+            if (repr_str != NULL) {
+                fprintf(stderr, " | value=%s", repr_str);
+            }
+            Py_DECREF(repr);
+        }
+    }
+    fprintf(stderr, "\n");
+    fflush(stderr);
+}
+
+// Debug helper to print stack contents
+extern "C" void jit_debug_stack(const char* label, PyObject** stack_base, int stack_size)
+{
+    fprintf(stderr, "[JIT STACK] %s | size=%d | [", label, stack_size);
+    for (int i = 0; i < stack_size; i++) {
+        if (i > 0) fprintf(stderr, ", ");
+        PyObject* obj = stack_base[i];
+        if (obj == NULL) {
+            fprintf(stderr, "NULL");
+        } else {
+            PyObject* repr = PyObject_Repr(obj);
+            if (repr != NULL) {
+                const char* repr_str = PyUnicode_AsUTF8(repr);
+                if (repr_str != NULL) {
+                    // Truncate long reprs
+                    if (strlen(repr_str) > 50) {
+                        fprintf(stderr, "%.47s...", repr_str);
+                    } else {
+                        fprintf(stderr, "%s", repr_str);
+                    }
+                }
+                Py_DECREF(repr);
+            } else {
+                fprintf(stderr, "<%s>", Py_TYPE(obj)->tp_name);
+            }
+        }
+    }
+    fprintf(stderr, "]\n");
+    fflush(stderr);
+}
+
 namespace justjit
 {
 
@@ -333,6 +391,11 @@ namespace justjit
             llvm::orc::ExecutorAddr::fromPtr(jit_xincref),
             llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
 
+        // Register jit_xdecref helper (NULL-safe Py_XDECREF)
+        helper_symbols[es.intern("jit_xdecref")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_xdecref),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
         // Register _PyJIT_GetAwaitable helper for GET_AWAITABLE opcode
         helper_symbols[es.intern("_PyJIT_GetAwaitable")] = {
             llvm::orc::ExecutorAddr::fromPtr(_PyJIT_GetAwaitable),
@@ -346,6 +409,15 @@ namespace justjit
         // Register _PyJIT_MatchClass helper for MATCH_CLASS opcode
         helper_symbols[es.intern("_PyJIT_MatchClass")] = {
             llvm::orc::ExecutorAddr::fromPtr(_PyJIT_MatchClass),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Register debug trace helpers
+        helper_symbols[es.intern("jit_debug_trace")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_debug_trace),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_debug_stack")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_debug_stack),
             llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
 
         auto err = jd.define(llvm::orc::absoluteSymbols(helper_symbols));
@@ -475,6 +547,10 @@ namespace justjit
         // void Py_DecRef(PyObject* o)
         llvm::FunctionType *decref_type = llvm::FunctionType::get(void_type, {ptr_type}, false);
         py_decref_func = llvm::Function::Create(decref_type, llvm::Function::ExternalLinkage, "Py_DecRef", module);
+
+        // void jit_xdecref(PyObject* o) - our NULL-safe wrapper for Py_XDECREF
+        llvm::FunctionType *xdecref_type = llvm::FunctionType::get(void_type, {ptr_type}, false);
+        py_xdecref_func = llvm::Function::Create(xdecref_type, llvm::Function::ExternalLinkage, "jit_xdecref", module);
 
         // PyObject* PyLong_FromLong(long value)
         llvm::FunctionType *long_fromlong_type = llvm::FunctionType::get(ptr_type, {i64_type}, false);
@@ -884,6 +960,427 @@ namespace justjit
         llvm::FunctionType *call_with_kwargs_type = llvm::FunctionType::get(
             ptr_type, {ptr_type, ptr_type, i64_type, ptr_type}, false);
         jit_call_with_kwargs_func = llvm::Function::Create(call_with_kwargs_type, llvm::Function::ExternalLinkage, "jit_call_with_kwargs", module);
+
+        // void jit_debug_trace(int offset, const char* opname, int stack_depth, PyObject* value)
+        // Debug helper for tracing generator execution
+        llvm::Type *i32_type = builder->getInt32Ty();
+        llvm::FunctionType *debug_trace_type = llvm::FunctionType::get(
+            void_type, {i32_type, ptr_type, i32_type, ptr_type}, false);
+        jit_debug_trace_func = llvm::Function::Create(debug_trace_type, llvm::Function::ExternalLinkage, "jit_debug_trace", module);
+
+        // void jit_debug_stack(const char* label, PyObject** stack_base, int stack_size)
+        // Debug helper for printing stack contents
+        llvm::FunctionType *debug_stack_type = llvm::FunctionType::get(
+            void_type, {ptr_type, ptr_type, i32_type}, false);
+        jit_debug_stack_func = llvm::Function::Create(debug_stack_type, llvm::Function::ExternalLinkage, "jit_debug_stack", module);
+    }
+
+    // =========================================================================
+    // CFG Analysis Helper Functions
+    // =========================================================================
+    // These functions perform control flow analysis on Python bytecode to
+    // determine basic block boundaries, predecessors/successors, and stack
+    // depths at each block entry for proper PHI node generation.
+    // =========================================================================
+
+    // Identify all basic block start offsets from bytecode
+    // Block boundaries occur at:
+    // 1. Start of function (offset 0)
+    // 2. Jump targets (POP_JUMP_IF_*, JUMP_*, FOR_ITER targets)
+    // 3. Fall-through after conditional jumps
+    // 4. Exception handler entry points
+    static std::set<int> find_block_starts(
+        const std::vector<Instruction>& instructions,
+        const std::vector<ExceptionTableEntry>& exception_table)
+    {
+        std::set<int> block_starts;
+        block_starts.insert(0);  // Entry block always starts at 0
+
+        for (size_t i = 0; i < instructions.size(); ++i)
+        {
+            const auto& instr = instructions[i];
+
+            // Jump targets create new blocks
+            if (instr.opcode == op::POP_JUMP_IF_FALSE || 
+                instr.opcode == op::POP_JUMP_IF_TRUE ||
+                instr.opcode == op::POP_JUMP_IF_NONE || 
+                instr.opcode == op::POP_JUMP_IF_NOT_NONE)
+            {
+                // Target of the jump
+                block_starts.insert(instr.argval);
+                // Fall-through to next instruction
+                if (i + 1 < instructions.size())
+                {
+                    block_starts.insert(instructions[i + 1].offset);
+                }
+            }
+            else if (instr.opcode == op::JUMP_FORWARD || instr.opcode == op::JUMP_BACKWARD)
+            {
+                block_starts.insert(instr.argval);
+                // Fall-through is not reachable for unconditional jumps,
+                // but the next instruction might be a target of another jump
+                if (i + 1 < instructions.size())
+                {
+                    // Only add if it's the start of a new logical block
+                    // (could be dead code otherwise)
+                    block_starts.insert(instructions[i + 1].offset);
+                }
+            }
+            else if (instr.opcode == op::FOR_ITER)
+            {
+                // FOR_ITER jumps forward on exhaustion
+                block_starts.insert(instr.argval);
+                // Fall-through when iterator has more
+                if (i + 1 < instructions.size())
+                {
+                    block_starts.insert(instructions[i + 1].offset);
+                }
+            }
+        }
+
+        // Exception handlers are block starts
+        for (const auto& exc_entry : exception_table)
+        {
+            block_starts.insert(exc_entry.target);
+        }
+
+        return block_starts;
+    }
+
+    // Build CFG: map each block start to its BasicBlockInfo
+    static std::map<int, BasicBlockInfo> build_cfg(
+        const std::vector<Instruction>& instructions,
+        const std::vector<ExceptionTableEntry>& exception_table,
+        const std::set<int>& block_starts)
+    {
+        std::map<int, BasicBlockInfo> cfg;
+
+        // Initialize all blocks
+        std::vector<int> sorted_starts(block_starts.begin(), block_starts.end());
+        std::sort(sorted_starts.begin(), sorted_starts.end());
+
+        for (size_t b = 0; b < sorted_starts.size(); ++b)
+        {
+            int start = sorted_starts[b];
+            BasicBlockInfo info;
+            info.start_offset = start;
+            info.end_offset = (b + 1 < sorted_starts.size()) ? sorted_starts[b + 1] : 
+                (instructions.empty() ? start : instructions.back().offset + 2);
+            info.stack_depth_at_entry = -1;  // Unknown initially
+            info.is_exception_handler = false;
+            info.needs_phi_nodes = false;
+            info.llvm_block = nullptr;
+            cfg[start] = info;
+        }
+
+        // Mark exception handlers
+        for (const auto& exc_entry : exception_table)
+        {
+            if (cfg.count(exc_entry.target))
+            {
+                cfg[exc_entry.target].is_exception_handler = true;
+                // Exception handlers have a specific stack depth
+                cfg[exc_entry.target].stack_depth_at_entry = exc_entry.depth;
+            }
+        }
+
+        // Build predecessor/successor edges by analyzing instructions
+        for (size_t i = 0; i < instructions.size(); ++i)
+        {
+            const auto& instr = instructions[i];
+            int current_offset = instr.offset;
+
+            // Find which block this instruction belongs to
+            int current_block_start = -1;
+            for (auto it = block_starts.rbegin(); it != block_starts.rend(); ++it)
+            {
+                if (*it <= current_offset)
+                {
+                    current_block_start = *it;
+                    break;
+                }
+            }
+            if (current_block_start < 0) continue;
+
+            // Analyze control flow instructions
+            if (instr.opcode == op::POP_JUMP_IF_FALSE || 
+                instr.opcode == op::POP_JUMP_IF_TRUE ||
+                instr.opcode == op::POP_JUMP_IF_NONE || 
+                instr.opcode == op::POP_JUMP_IF_NOT_NONE)
+            {
+                int target = instr.argval;
+                int fall_through = (i + 1 < instructions.size()) ? instructions[i + 1].offset : -1;
+
+                // Add edges
+                if (cfg.count(target))
+                {
+                    cfg[current_block_start].successors.push_back(target);
+                    cfg[target].predecessors.push_back(current_block_start);
+                }
+                if (fall_through >= 0 && cfg.count(fall_through))
+                {
+                    cfg[current_block_start].successors.push_back(fall_through);
+                    cfg[fall_through].predecessors.push_back(current_block_start);
+                }
+            }
+            else if (instr.opcode == op::JUMP_FORWARD || instr.opcode == op::JUMP_BACKWARD)
+            {
+                int target = instr.argval;
+                if (cfg.count(target))
+                {
+                    cfg[current_block_start].successors.push_back(target);
+                    cfg[target].predecessors.push_back(current_block_start);
+                }
+            }
+            else if (instr.opcode == op::FOR_ITER)
+            {
+                int target = instr.argval;  // Jump when exhausted
+                int fall_through = (i + 1 < instructions.size()) ? instructions[i + 1].offset : -1;
+
+                if (cfg.count(target))
+                {
+                    cfg[current_block_start].successors.push_back(target);
+                    cfg[target].predecessors.push_back(current_block_start);
+                }
+                if (fall_through >= 0 && cfg.count(fall_through))
+                {
+                    cfg[current_block_start].successors.push_back(fall_through);
+                    cfg[fall_through].predecessors.push_back(current_block_start);
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE || instr.opcode == op::RETURN_CONST)
+            {
+                // No successors - this ends the function
+            }
+            else if (i + 1 < instructions.size())
+            {
+                // Check if next instruction starts a new block (fall-through edge)
+                int next_offset = instructions[i + 1].offset;
+                if (cfg.count(next_offset) && current_block_start != next_offset)
+                {
+                    // Only add if this is the last instruction of current block
+                    if (cfg[current_block_start].end_offset == next_offset)
+                    {
+                        cfg[current_block_start].successors.push_back(next_offset);
+                        cfg[next_offset].predecessors.push_back(current_block_start);
+                    }
+                }
+            }
+        }
+
+        // Mark blocks that need PHI nodes (multiple predecessors)
+        for (auto& [offset, info] : cfg)
+        {
+            if (info.predecessors.size() > 1)
+            {
+                info.needs_phi_nodes = true;
+            }
+        }
+
+        return cfg;
+    }
+
+    // Compute stack depth at entry for each block using dataflow analysis
+    // Returns true if analysis succeeded, false if inconsistent
+    static bool compute_stack_depths(
+        std::map<int, BasicBlockInfo>& cfg,
+        const std::vector<Instruction>& instructions,
+        int initial_stack_depth = 0)
+    {
+        if (cfg.empty()) return true;
+
+        // Entry block starts with initial_stack_depth (usually 0)
+        auto entry_it = cfg.find(0);
+        if (entry_it != cfg.end())
+        {
+            entry_it->second.stack_depth_at_entry = initial_stack_depth;
+        }
+
+        // Worklist algorithm for dataflow
+        std::set<int> worklist;
+        for (const auto& [offset, info] : cfg)
+        {
+            worklist.insert(offset);
+        }
+
+        // Map opcode to stack effect (delta)
+        auto get_stack_effect = [](const Instruction& instr) -> int
+        {
+            // Stack effects for common opcodes
+            // Positive = push, Negative = pop
+            switch (instr.opcode)
+            {
+                // Push 1
+                case op::LOAD_FAST:
+                case op::LOAD_CONST:
+                case op::LOAD_GLOBAL:
+                case op::LOAD_NAME:
+                case op::LOAD_ATTR:
+                case op::LOAD_DEREF:
+                case op::BUILD_TUPLE:  // pops N, pushes 1 - handled specially
+                case op::BUILD_LIST:
+                case op::BUILD_SET:
+                case op::BUILD_MAP:
+                    return 1;
+
+                // Pop 1
+                case op::POP_TOP:
+                case op::STORE_FAST:
+                case op::STORE_NAME:
+                case op::STORE_GLOBAL:
+                case op::STORE_DEREF:
+                case op::POP_JUMP_IF_FALSE:
+                case op::POP_JUMP_IF_TRUE:
+                case op::POP_JUMP_IF_NONE:
+                case op::POP_JUMP_IF_NOT_NONE:
+                case op::RETURN_VALUE:
+                    return -1;
+
+                // Pop 2, Push 1
+                case op::BINARY_OP:
+                case op::COMPARE_OP:
+                case op::CONTAINS_OP:
+                case op::IS_OP:
+                    return -1;  // Net effect: -2 + 1 = -1
+
+                // Pop 2
+                case op::STORE_ATTR:
+                case op::STORE_SUBSCR:
+                    return -2;
+
+                // Pop 3
+                case op::STORE_SLICE:
+                    return -3;
+
+                // MATCH opcodes: push result without popping subject
+                case op::MATCH_SEQUENCE:
+                case op::MATCH_MAPPING:
+                    return 1;  // Push bool result, subject stays
+
+                // MATCH_KEYS: pops nothing, pushes 1 (values tuple or None)
+                case op::MATCH_KEYS:
+                    return 1;
+
+                // MATCH_CLASS: pops 2 (cls, names), pushes 1 (attrs or None)
+                case op::MATCH_CLASS:
+                    return -1;
+
+                // Neutral
+                case op::RESUME:
+                case op::CACHE:
+                case op::NOP:
+                case op::EXTENDED_ARG:
+                case op::JUMP_FORWARD:
+                case op::JUMP_BACKWARD:
+                    return 0;
+
+                // FOR_ITER: pushes 1 on continue, pops 1 on exhaustion
+                case op::FOR_ITER:
+                    return 1;  // When continuing
+
+                // GET_ITER: pops 1, pushes 1 (iterator)
+                case op::GET_ITER:
+                    return 0;
+
+                // CALL: pops callable + N args, pushes result
+                case op::CALL:
+                    // Stack effect depends on arg, but net is -(arg+1)+1 = -arg
+                    return -(int)instr.arg;
+
+                // COPY: duplicates TOS[i] to TOS
+                case op::COPY:
+                    return 1;
+
+                // SWAP: swaps, no net change
+                case op::SWAP:
+                    return 0;
+
+                // UNPACK_SEQUENCE: pops 1, pushes N
+                case op::UNPACK_SEQUENCE:
+                    return (int)instr.arg - 1;
+
+                default:
+                    return 0;  // Unknown - assume neutral
+            }
+        };
+
+        int iterations = 0;
+        const int max_iterations = 1000;  // Safety limit
+
+        while (!worklist.empty() && iterations++ < max_iterations)
+        {
+            int block_offset = *worklist.begin();
+            worklist.erase(worklist.begin());
+
+            auto& block = cfg[block_offset];
+            
+            // Skip if we don't know entry depth yet
+            if (block.stack_depth_at_entry < 0)
+            {
+                // Check if any predecessor has known exit depth
+                for (int pred_offset : block.predecessors)
+                {
+                    if (cfg.count(pred_offset) && cfg[pred_offset].stack_depth_at_entry >= 0)
+                    {
+                        // Compute predecessor's exit depth
+                        int pred_depth = cfg[pred_offset].stack_depth_at_entry;
+                        
+                        // Find instructions in predecessor block
+                        for (const auto& instr : instructions)
+                        {
+                            if (instr.offset >= cfg[pred_offset].start_offset &&
+                                instr.offset < cfg[pred_offset].end_offset)
+                            {
+                                pred_depth += get_stack_effect(instr);
+                                if (pred_depth < 0) pred_depth = 0;  // Safety
+                            }
+                        }
+
+                        block.stack_depth_at_entry = pred_depth;
+                        break;
+                    }
+                }
+
+                // Still unknown - re-add to worklist if predecessors might update
+                if (block.stack_depth_at_entry < 0 && !block.predecessors.empty())
+                {
+                    worklist.insert(block_offset);
+                }
+                continue;
+            }
+
+            // Compute exit depth for this block
+            int exit_depth = block.stack_depth_at_entry;
+            for (const auto& instr : instructions)
+            {
+                if (instr.offset >= block.start_offset && instr.offset < block.end_offset)
+                {
+                    exit_depth += get_stack_effect(instr);
+                    if (exit_depth < 0) exit_depth = 0;  // Safety
+                }
+            }
+
+            // Propagate to successors
+            for (int succ_offset : block.successors)
+            {
+                if (!cfg.count(succ_offset)) continue;
+                auto& succ = cfg[succ_offset];
+
+                if (succ.stack_depth_at_entry < 0)
+                {
+                    succ.stack_depth_at_entry = exit_depth;
+                    worklist.insert(succ_offset);
+                }
+                else if (succ.stack_depth_at_entry != exit_depth)
+                {
+                    // Inconsistency - this can happen with complex control flow
+                    // Mark as needing PHI nodes
+                    succ.needs_phi_nodes = true;
+                }
+            }
+        }
+
+        return iterations < max_iterations;
     }
 
     bool JITCore::compile_function(nb::list py_instructions, nb::list py_constants, nb::list py_names, nb::object py_globals_dict, nb::object py_builtins_dict, nb::list py_closure_cells, nb::list py_exception_table, const std::string &name, int param_count, int total_locals, int nlocals)
@@ -1054,6 +1551,23 @@ namespace justjit
         std::unordered_map<int, std::vector<BlockStackState>> block_incoming_stacks;
         std::unordered_map<int, bool> block_needs_phi; // Blocks that need PHI nodes
 
+        // =====================================================================
+        // CFG Analysis: Build control flow graph for proper PHI node placement
+        // This enables support for complex control flow like pattern matching
+        // =====================================================================
+        std::set<int> block_starts = find_block_starts(instructions, exception_table);
+        std::map<int, BasicBlockInfo> cfg = build_cfg(instructions, exception_table, block_starts);
+        compute_stack_depths(cfg, instructions, 0);
+
+        // Mark blocks that need PHI nodes based on CFG analysis
+        for (const auto& [offset, info] : cfg)
+        {
+            if (info.needs_phi_nodes)
+            {
+                block_needs_phi[offset] = true;
+            }
+        }
+
         // Create allocas only for actual locals needed (not 256!)
         // In object mode, all locals are PyObject* (ptr type)
         llvm::IRBuilder<> alloca_builder(entry, entry->begin());
@@ -1073,8 +1587,48 @@ namespace justjit
             builder.CreateStore(&*args++, local_allocas[i]);
         }
 
-        // First pass: Create basic blocks for all jump targets
+        // First pass: Create basic blocks for all CFG block starts
+        // This ensures we have blocks at all merge points for PHI nodes
         jump_targets[0] = entry;
+        
+        // Create blocks for all CFG block starts (except entry which already exists)
+        for (int block_offset : block_starts)
+        {
+            if (block_offset == 0) continue;  // Entry block already created
+            
+            if (!jump_targets.count(block_offset))
+            {
+                std::string block_name;
+                if (cfg.count(block_offset) && cfg[block_offset].is_exception_handler)
+                {
+                    block_name = "exc_handler_" + std::to_string(block_offset);
+                }
+                else if (cfg.count(block_offset) && cfg[block_offset].needs_phi_nodes)
+                {
+                    block_name = "merge_" + std::to_string(block_offset);
+                }
+                else
+                {
+                    block_name = "block_" + std::to_string(block_offset);
+                }
+                jump_targets[block_offset] = llvm::BasicBlock::Create(
+                    *local_context, block_name, func);
+                
+                // Store LLVM block reference in CFG
+                if (cfg.count(block_offset))
+                {
+                    cfg[block_offset].llvm_block = jump_targets[block_offset];
+                }
+            }
+        }
+        
+        // Store entry block in CFG
+        if (cfg.count(0))
+        {
+            cfg[0].llvm_block = entry;
+        }
+
+        // Also create blocks for jump targets not in block_starts (legacy compatibility)
         for (size_t i = 0; i < instructions.size(); ++i)
         {
             const auto &instr = instructions[i];
@@ -1231,6 +1785,21 @@ namespace justjit
             builder.SetInsertPoint(dead_block);
             stack.clear();
         };
+        
+        // Helper to check if current block is a dead block (unreachable code placeholder)
+        // This includes "dead_" blocks from switch_to_dead_block() and "unreachable_" blocks
+        // from JUMP_BACKWARD which creates unreachable_after_jump blocks with terminators
+        auto is_dead_block = [&]() -> bool
+        {
+            llvm::BasicBlock *current_block = builder.GetInsertBlock();
+            if (!current_block) return false;
+            llvm::StringRef name = current_block->getName();
+            return name.starts_with("dead_") || name.starts_with("unreachable_");
+        };
+        
+        // Track whether we're currently in an unreachable code region
+        // This propagates across blocks when we enter from a dead block with no legitimate predecessors
+        bool in_unreachable_region = false;
 
         // Second pass: Generate code
         for (size_t i = 0; i < instructions.size(); ++i)
@@ -1241,8 +1810,11 @@ namespace justjit
             if (jump_targets.count(current_offset) && jump_targets[current_offset] != builder.GetInsertBlock())
             {
                 // Record current stack state before branching (for fall-through)
+                // But skip if we're in a dead block or unreachable region - its stack state is invalid
                 llvm::BasicBlock *current_block = builder.GetInsertBlock();
-                if (!current_block->getTerminator())
+                bool from_dead_block = is_dead_block() || in_unreachable_region;
+                
+                if (!current_block->getTerminator() && !from_dead_block)
                 {
                     // Record stack state for this predecessor
                     BlockStackState state;
@@ -1253,6 +1825,21 @@ namespace justjit
                     builder.CreateBr(jump_targets[current_offset]);
                 }
                 builder.SetInsertPoint(jump_targets[current_offset]);
+                
+                // Check if the target block has legitimate predecessors (recorded stacks)
+                // If not, we're entering dead code from dead code
+                if (!block_incoming_stacks.count(current_offset) || 
+                    block_incoming_stacks[current_offset].empty())
+                {
+                    // No legitimate predecessors - this block is unreachable
+                    // Mark that we're in unreachable region
+                    in_unreachable_region = true;
+                }
+                else
+                {
+                    // This block has legitimate predecessors - we're back to live code
+                    in_unreachable_region = false;
+                }
 
                 // Bug #1 Fix: Check if this block has recorded incoming stacks
                 if (block_incoming_stacks.count(current_offset) &&
@@ -2959,6 +3546,36 @@ namespace justjit
                 }
             }
             // ========== Pattern Matching Opcodes ==========
+            else if (instr.opcode == op::GET_LEN)
+            {
+                // GET_LEN: Push len(TOS) onto stack without popping TOS
+                // Used in match statements for sequence length comparison
+                // Stack: [..., obj] -> [..., obj, len(obj)]
+                if (!stack.empty())
+                {
+                    llvm::Value *obj = stack.back();
+                    // Don't pop - GET_LEN leaves object on stack
+                    
+                    // Box if needed
+                    if (obj->getType()->isIntegerTy(64))
+                    {
+                        obj = builder.CreateCall(py_long_fromlonglong_func, {obj});
+                        stack.back() = obj;
+                        builder.CreateCall(py_incref_func, {obj});
+                    }
+                    
+                    // Call PyObject_Size to get length
+                    llvm::FunctionType *py_object_size_type = llvm::FunctionType::get(
+                        i64_type, {ptr_type}, false);
+                    llvm::FunctionCallee py_object_size_func = module->getOrInsertFunction(
+                        "PyObject_Size", py_object_size_type);
+                    llvm::Value *length = builder.CreateCall(py_object_size_func, {obj}, "len");
+                    
+                    // Convert to PyLong for stack (consistent with other stack values)
+                    llvm::Value *len_obj = builder.CreateCall(py_long_fromlonglong_func, {length}, "len_obj");
+                    stack.push_back(len_obj);
+                }
+            }
             else if (instr.opcode == op::MATCH_MAPPING)
             {
                 // MATCH_MAPPING: Test if TOS is a mapping (dict-like)
@@ -3022,7 +3639,8 @@ namespace justjit
                     // For pattern matching, we need to check:
                     // 1. PySequence_Check(obj) is true
                     // 2. NOT isinstance(obj, (str, bytes, bytearray))
-                    // Use _PySequence_IterSearch internal API or manual check
+                    // Note: PyBytes_Check, PyUnicode_Check, PyByteArray_Check are macros, not functions.
+                    // We use PyObject_IsInstance with the type objects instead.
 
                     // Check if it's a sequence
                     llvm::FunctionType *py_sequence_check_type = llvm::FunctionType::get(
@@ -3032,36 +3650,35 @@ namespace justjit
                         "PySequence_Check", py_sequence_check_type);
                     llvm::Value *is_sequence = builder.CreateCall(py_sequence_check_func, {subject}, "is_sequence");
 
-                    // Check if it's a string (must exclude)
-                    llvm::FunctionType *py_unicode_check_type = llvm::FunctionType::get(
+                    // PyObject_IsInstance returns 1 if true, 0 if false, -1 on error
+                    llvm::FunctionType *py_isinstance_type = llvm::FunctionType::get(
                         llvm::Type::getInt32Ty(*local_context),
-                        {ptr_type}, false);
-                    llvm::FunctionCallee py_unicode_check_func = module->getOrInsertFunction(
-                        "PyUnicode_Check", py_unicode_check_type);
-                    llvm::Value *is_unicode = builder.CreateCall(py_unicode_check_func, {subject}, "is_unicode");
+                        {ptr_type, ptr_type}, false);
+                    llvm::FunctionCallee py_isinstance_func = module->getOrInsertFunction(
+                        "PyObject_IsInstance", py_isinstance_type);
 
-                    // Check if it's bytes
-                    llvm::FunctionType *py_bytes_check_type = llvm::FunctionType::get(
-                        llvm::Type::getInt32Ty(*local_context),
-                        {ptr_type}, false);
-                    llvm::FunctionCallee py_bytes_check_func = module->getOrInsertFunction(
-                        "PyBytes_Check", py_bytes_check_type);
-                    llvm::Value *is_bytes = builder.CreateCall(py_bytes_check_func, {subject}, "is_bytes");
+                    // Get type objects for str, bytes, bytearray
+                    llvm::Value *unicode_type_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(&PyUnicode_Type));
+                    llvm::Value *unicode_type = builder.CreateIntToPtr(unicode_type_ptr, ptr_type);
+                    
+                    llvm::Value *bytes_type_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(&PyBytes_Type));
+                    llvm::Value *bytes_type = builder.CreateIntToPtr(bytes_type_ptr, ptr_type);
+                    
+                    llvm::Value *bytearray_type_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(&PyByteArray_Type));
+                    llvm::Value *bytearray_type = builder.CreateIntToPtr(bytearray_type_ptr, ptr_type);
 
-                    // Check if it's bytearray
-                    llvm::FunctionType *py_bytearray_check_type = llvm::FunctionType::get(
-                        llvm::Type::getInt32Ty(*local_context),
-                        {ptr_type}, false);
-                    llvm::FunctionCallee py_bytearray_check_func = module->getOrInsertFunction(
-                        "PyByteArray_Check", py_bytearray_check_type);
-                    llvm::Value *is_bytearray = builder.CreateCall(py_bytearray_check_func, {subject}, "is_bytearray");
+                    // Check isinstance for each type
+                    llvm::Value *is_unicode = builder.CreateCall(py_isinstance_func, {subject, unicode_type}, "is_unicode");
+                    llvm::Value *is_bytes = builder.CreateCall(py_isinstance_func, {subject, bytes_type}, "is_bytes");
+                    llvm::Value *is_bytearray = builder.CreateCall(py_isinstance_func, {subject, bytearray_type}, "is_bytearray");
 
                     // Result = is_sequence && !is_unicode && !is_bytes && !is_bytearray
+                    // isinstance returns > 0 for true
                     llvm::Value *zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*local_context), 0);
-                    llvm::Value *seq_ok = builder.CreateICmpNE(is_sequence, zero, "seq_ok");
-                    llvm::Value *not_unicode = builder.CreateICmpEQ(is_unicode, zero, "not_unicode");
-                    llvm::Value *not_bytes = builder.CreateICmpEQ(is_bytes, zero, "not_bytes");
-                    llvm::Value *not_bytearray = builder.CreateICmpEQ(is_bytearray, zero, "not_bytearray");
+                    llvm::Value *seq_ok = builder.CreateICmpSGT(is_sequence, zero, "seq_ok");
+                    llvm::Value *not_unicode = builder.CreateICmpSLE(is_unicode, zero, "not_unicode");
+                    llvm::Value *not_bytes = builder.CreateICmpSLE(is_bytes, zero, "not_bytes");
+                    llvm::Value *not_bytearray = builder.CreateICmpSLE(is_bytearray, zero, "not_bytearray");
                     llvm::Value *result = builder.CreateAnd(seq_ok, not_unicode);
                     result = builder.CreateAnd(result, not_bytes);
                     result = builder.CreateAnd(result, not_bytearray);
@@ -3397,6 +4014,9 @@ namespace justjit
                         builder.CreateCall(py_incref_func, {py_none});
                         builder.CreateRet(py_none);
                     }
+                    // After return, switch to a dead block to prevent stale stack values
+                    // from being used when compiling subsequent unreachable code
+                    switch_to_dead_block();
                 }
             }
             else if (instr.opcode == op::RETURN_VALUE)
@@ -3421,6 +4041,9 @@ namespace justjit
                         builder.CreateCall(py_incref_func, {py_none});
                         builder.CreateRet(py_none);
                     }
+                    // After return, switch to a dead block to prevent stale stack values
+                    // from being used when compiling subsequent unreachable code
+                    switch_to_dead_block();
                 }
             }
             else if (instr.opcode == op::BUILD_LIST)
@@ -5794,16 +6417,16 @@ namespace justjit
                         llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)),
                         "iter_done");
 
-                    // CPython: argval points to END_FOR. We need to jump past END_FOR + POP_TOP.
-                    // END_FOR is 2 bytes, POP_TOP is 2 bytes, so target is argval + 4
-                    int end_for_offset = instr.argval;
-                    int after_loop_offset = end_for_offset + 4; // Skip END_FOR (2) + POP_TOP (2)
+                    // FIX: In Python 3.12+, FOR_ITER jumps directly to END_FOR (argval).
+                    // The iterator STAYS on the stack; END_FOR will pop it.
+                    // Do NOT add +4 to skip instructions - let them execute normally.
+                    int end_for_offset = instr.argval;  // This is where we jump on exhaustion
                     int next_offset = instructions[i + 1].offset;
 
-                    if (!jump_targets.count(after_loop_offset))
+                    if (!jump_targets.count(end_for_offset))
                     {
-                        jump_targets[after_loop_offset] = llvm::BasicBlock::Create(
-                            *local_context, "after_loop_" + std::to_string(after_loop_offset), func);
+                        jump_targets[end_for_offset] = llvm::BasicBlock::Create(
+                            *local_context, "end_for_" + std::to_string(end_for_offset), func);
                     }
                     if (!jump_targets.count(next_offset))
                     {
@@ -5822,24 +6445,22 @@ namespace justjit
                         builder.CreateCondBr(is_null, exhausted_block, continue_block);
                     }
 
-                    // Exhausted path: Pop and decref iterator, then jump past END_FOR + POP_TOP
+                    // Exhausted path: Jump to END_FOR with iterator still on stack
+                    // END_FOR will pop and decref the iterator
                     builder.SetInsertPoint(exhausted_block);
-                    builder.CreateCall(py_decref_func, {iterator});
+                    // Clear any StopIteration exception from PyIter_Next
+                    builder.CreateCall(py_err_clear_func, {});
 
-                    // CRITICAL FIX: Record the exhaust-path stack state for after_loop_offset
-                    // The stack after iterator is popped (for the after-loop code)
+                    // Record the exhaust-path stack state for end_for_offset
+                    // Iterator is STILL on the stack (END_FOR will pop it)
                     {
                         BlockStackState exhaust_state;
                         exhaust_state.predecessor = exhausted_block;
-                        // Copy stack WITHOUT the iterator (it's been popped)
-                        for (size_t s = 0; s < stack.size() - 1; ++s)
-                        {
-                            exhaust_state.stack.push_back(stack[s]);
-                        }
-                        block_incoming_stacks[after_loop_offset].push_back(exhaust_state);
+                        exhaust_state.stack = stack;  // Iterator still on stack
+                        block_incoming_stacks[end_for_offset].push_back(exhaust_state);
                     }
 
-                    builder.CreateBr(jump_targets[after_loop_offset]);
+                    builder.CreateBr(jump_targets[end_for_offset]);
 
                     // Continue path: push next item, continue to next instruction
                     builder.SetInsertPoint(continue_block);
@@ -6138,6 +6759,304 @@ namespace justjit
                 builder.CreateRet(llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)));
                 // Switch to dead block to prevent code after terminator
                 switch_to_dead_block();
+            }
+            // ========== Async With Support ==========
+            else if (instr.opcode == op::BEFORE_ASYNC_WITH)
+            {
+                // BEFORE_ASYNC_WITH: Set up an async with block
+                // Python 3.13: Resolves __aenter__ and __aexit__ from STACK[-1]
+                // Pushes __aexit__ and result of __aenter__() to the stack
+                // Stack: TOS=context_manager -> __aexit__, __aenter__() result
+                if (!stack.empty())
+                {
+                    llvm::Value *context_mgr = stack.back();
+                    stack.pop_back();
+
+                    // Get __aexit__ method
+                    llvm::Value *aexit_name_ptr = llvm::ConstantInt::get(
+                        i64_type,
+                        reinterpret_cast<uint64_t>(PyUnicode_FromString("__aexit__")));
+                    llvm::Value *aexit_name = builder.CreateIntToPtr(aexit_name_ptr, ptr_type);
+                    llvm::Value *aexit_method = builder.CreateCall(py_object_getattr_func, {context_mgr, aexit_name}, "aexit_method");
+                    check_error_and_branch(current_offset, aexit_method, "before_async_with_aexit");
+
+                    // Get __aenter__ method
+                    llvm::Value *aenter_name_ptr = llvm::ConstantInt::get(
+                        i64_type,
+                        reinterpret_cast<uint64_t>(PyUnicode_FromString("__aenter__")));
+                    llvm::Value *aenter_name = builder.CreateIntToPtr(aenter_name_ptr, ptr_type);
+                    llvm::Value *aenter_method = builder.CreateCall(py_object_getattr_func, {context_mgr, aenter_name}, "aenter_method");
+                    check_error_and_branch(current_offset, aenter_method, "before_async_with_aenter");
+
+                    // Call __aenter__() - returns an awaitable
+                    llvm::Value *empty_args = builder.CreateCall(py_tuple_new_func, {llvm::ConstantInt::get(i64_type, 0)}, "empty_args");
+                    llvm::Value *null_kwargs = llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
+                    llvm::Value *aenter_result = builder.CreateCall(py_object_call_func, {aenter_method, empty_args, null_kwargs}, "aenter_result");
+                    builder.CreateCall(py_decref_func, {empty_args});
+                    builder.CreateCall(py_decref_func, {aenter_method});
+                    builder.CreateCall(py_decref_func, {context_mgr});
+                    check_error_and_branch(current_offset, aenter_result, "before_async_with_call");
+
+                    // Push __aexit__ and aenter result (the awaitable)
+                    stack.push_back(aexit_method);
+                    stack.push_back(aenter_result);
+                }
+            }
+            // ========== Exception Group Matching ==========
+            else if (instr.opcode == op::CHECK_EG_MATCH)
+            {
+                // CHECK_EG_MATCH: Match exception group for except*
+                // Python 3.13: Applies split(STACK[-1]) on exception group at STACK[-2]
+                // On match: pop 2, push non-matching subgroup (or None) + matching subgroup
+                // On no match: pop 1 (match type), push None
+                // For now, push None to indicate no match (conservative fallback)
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *match_type = stack.back();
+                    stack.pop_back();
+                    // Leave exception group on stack, push None for "no match"
+                    builder.CreateCall(py_decref_func, {match_type});
+
+                    llvm::Value *none_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_None));
+                    llvm::Value *py_none = builder.CreateIntToPtr(none_ptr, ptr_type);
+                    builder.CreateCall(py_incref_func, {py_none});
+                    stack.push_back(py_none);
+                }
+            }
+            // ========== Init Check ==========
+            else if (instr.opcode == op::EXIT_INIT_CHECK)
+            {
+                // EXIT_INIT_CHECK: Verify __init__ returned None
+                // Python 3.13: If TOS is not None, raise TypeError
+                // Stack: TOS=init_return_value (popped)
+                if (!stack.empty())
+                {
+                    llvm::Value *init_result = stack.back();
+                    stack.pop_back();
+
+                    // Check if result is None
+                    llvm::Value *none_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_None));
+                    llvm::Value *py_none = builder.CreateIntToPtr(none_ptr, ptr_type);
+                    llvm::Value *is_none = builder.CreateICmpEQ(init_result, py_none, "is_none");
+
+                    llvm::BasicBlock *ok_block = llvm::BasicBlock::Create(*local_context, "init_ok", func);
+                    llvm::BasicBlock *error_block = llvm::BasicBlock::Create(*local_context, "init_error", func);
+
+                    builder.CreateCondBr(is_none, ok_block, error_block);
+
+                    // Error block: raise TypeError
+                    builder.SetInsertPoint(error_block);
+                    llvm::Value *type_error_ptr = llvm::ConstantInt::get(
+                        i64_type, reinterpret_cast<uint64_t>(PyExc_TypeError));
+                    llvm::Value *type_error = builder.CreateIntToPtr(type_error_ptr, ptr_type);
+                    llvm::Value *err_msg_ptr = llvm::ConstantInt::get(
+                        i64_type, reinterpret_cast<uint64_t>(PyUnicode_FromString("__init__ returned non-None")));
+                    llvm::Value *err_msg = builder.CreateIntToPtr(err_msg_ptr, ptr_type);
+                    builder.CreateCall(py_err_set_object_func, {type_error, err_msg});
+                    builder.CreateCall(py_decref_func, {init_result});
+                    builder.CreateRet(llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)));
+
+                    // OK block: continue
+                    builder.SetInsertPoint(ok_block);
+                    builder.CreateCall(py_decref_func, {init_result});
+                }
+            }
+            // ========== Annotation Scope Operations ==========
+            else if (instr.opcode == op::LOAD_LOCALS)
+            {
+                // LOAD_LOCALS: Push reference to locals dictionary
+                // Python 3.13: Used to prepare namespace for LOAD_FROM_DICT_OR_DEREF/GLOBALS
+                // For JIT compiled functions, we use the globals dict at module level
+                llvm::Value *globals_ptr_val = llvm::ConstantInt::get(
+                    i64_type, reinterpret_cast<uint64_t>(globals_dict_ptr));
+                llvm::Value *locals_dict = builder.CreateIntToPtr(globals_ptr_val, ptr_type, "locals_dict");
+                builder.CreateCall(py_incref_func, {locals_dict});
+                stack.push_back(locals_dict);
+            }
+            else if (instr.opcode == op::LOAD_FROM_DICT_OR_DEREF)
+            {
+                // LOAD_FROM_DICT_OR_DEREF: Pop mapping, lookup name, else load from cell
+                // Python 3.13: Used for closure variables in class bodies
+                // arg = slot i in fast locals storage
+                int slot_idx = instr.arg;
+
+                if (!stack.empty())
+                {
+                    llvm::Value *mapping = stack.back();
+                    stack.pop_back();
+
+                    // For now, just try to load from the mapping using the variable name
+                    // If not found, fall back to cell
+                    // This is a simplified implementation
+
+                    llvm::Value *result = nullptr;
+
+                    // Try loading from cell if available
+                    if (slot_idx < static_cast<int>(closure_cells.size()) && closure_cells[slot_idx] != nullptr)
+                    {
+                        llvm::Value *cell_ptr = llvm::ConstantInt::get(
+                            i64_type, reinterpret_cast<uint64_t>(closure_cells[slot_idx]));
+                        llvm::Value *cell = builder.CreateIntToPtr(cell_ptr, ptr_type);
+                        result = builder.CreateCall(py_cell_get_func, {cell}, "cell_value");
+                        builder.CreateCall(py_incref_func, {result});
+                    }
+                    else
+                    {
+                        // No cell, return None as fallback
+                        llvm::Value *none_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_None));
+                        result = builder.CreateIntToPtr(none_ptr, ptr_type);
+                        builder.CreateCall(py_incref_func, {result});
+                    }
+
+                    builder.CreateCall(py_decref_func, {mapping});
+                    stack.push_back(result);
+                }
+            }
+            else if (instr.opcode == op::LOAD_FROM_DICT_OR_GLOBALS)
+            {
+                // LOAD_FROM_DICT_OR_GLOBALS: Pop mapping, lookup name, else load global
+                // Python 3.13: Used for loading global variables in annotation scopes
+                // arg = index into co_names
+                int name_idx = instr.arg;
+
+                if (!stack.empty() && name_idx < static_cast<int>(name_objects.size()))
+                {
+                    llvm::Value *mapping = stack.back();
+                    stack.pop_back();
+
+                    // Get the name object
+                    llvm::Value *name_ptr = llvm::ConstantInt::get(
+                        i64_type, reinterpret_cast<uint64_t>(name_objects[name_idx]));
+                    llvm::Value *name_obj = builder.CreateIntToPtr(name_ptr, ptr_type);
+
+                    // Try mapping first
+                    llvm::Value *dict_result = builder.CreateCall(py_dict_getitem_func, {mapping, name_obj}, "dict_lookup");
+
+                    llvm::Value *is_null = builder.CreateIsNull(dict_result);
+                    llvm::BasicBlock *found_block = llvm::BasicBlock::Create(*local_context, "dict_found", func);
+                    llvm::BasicBlock *try_globals_block = llvm::BasicBlock::Create(*local_context, "try_globals", func);
+                    llvm::BasicBlock *continue_block = llvm::BasicBlock::Create(*local_context, "load_continue", func);
+
+                    builder.CreateCondBr(is_null, try_globals_block, found_block);
+
+                    // Found in mapping
+                    builder.SetInsertPoint(found_block);
+                    builder.CreateCall(py_incref_func, {dict_result}); // Borrowed ref
+                    builder.CreateBr(continue_block);
+
+                    // Try globals
+                    builder.SetInsertPoint(try_globals_block);
+                    llvm::Value *globals_ptr_val = llvm::ConstantInt::get(
+                        i64_type, reinterpret_cast<uint64_t>(globals_dict_ptr));
+                    llvm::Value *globals_dict = builder.CreateIntToPtr(globals_ptr_val, ptr_type);
+                    llvm::Value *global_result = builder.CreateCall(py_dict_getitem_func, {globals_dict, name_obj}, "global_lookup");
+
+                    // Check if found in globals
+                    llvm::Value *global_is_null = builder.CreateIsNull(global_result);
+                    llvm::BasicBlock *global_found_block = llvm::BasicBlock::Create(*local_context, "global_found", func);
+                    llvm::BasicBlock *try_builtins_block = llvm::BasicBlock::Create(*local_context, "try_builtins", func);
+
+                    builder.CreateCondBr(global_is_null, try_builtins_block, global_found_block);
+
+                    // Found in globals
+                    builder.SetInsertPoint(global_found_block);
+                    builder.CreateCall(py_incref_func, {global_result});
+                    builder.CreateBr(continue_block);
+
+                    // Try builtins
+                    builder.SetInsertPoint(try_builtins_block);
+                    llvm::Value *builtins_ptr = llvm::ConstantInt::get(
+                        i64_type, reinterpret_cast<uint64_t>(builtins_dict_ptr));
+                    llvm::Value *builtins_dict = builder.CreateIntToPtr(builtins_ptr, ptr_type);
+                    llvm::Value *builtin_result = builder.CreateCall(py_dict_getitem_func, {builtins_dict, name_obj}, "builtin_lookup");
+                    builder.CreateCall(py_incref_func, {builtin_result});
+                    builder.CreateBr(continue_block);
+
+                    // Continue with PHI
+                    builder.SetInsertPoint(continue_block);
+                    llvm::PHINode *result_phi = builder.CreatePHI(ptr_type, 3, "load_result");
+                    result_phi->addIncoming(dict_result, found_block);
+                    result_phi->addIncoming(global_result, global_found_block);
+                    result_phi->addIncoming(builtin_result, try_builtins_block);
+
+                    builder.CreateCall(py_decref_func, {mapping});
+                    stack.push_back(result_phi);
+                }
+            }
+            else if (instr.opcode == op::SETUP_ANNOTATIONS)
+            {
+                // SETUP_ANNOTATIONS: Create __annotations__ dict if not exists
+                // Python 3.13: Checks if __annotations__ is in locals(), if not creates empty dict
+                // For JIT, we set it in globals (module level)
+                llvm::Value *globals_ptr_val = llvm::ConstantInt::get(
+                    i64_type, reinterpret_cast<uint64_t>(globals_dict_ptr));
+                llvm::Value *globals_dict = builder.CreateIntToPtr(globals_ptr_val, ptr_type);
+
+                // Get "__annotations__" string
+                llvm::Value *annot_name_ptr = llvm::ConstantInt::get(
+                    i64_type, reinterpret_cast<uint64_t>(PyUnicode_FromString("__annotations__")));
+                llvm::Value *annot_name = builder.CreateIntToPtr(annot_name_ptr, ptr_type);
+
+                // Check if __annotations__ exists
+                llvm::Value *existing = builder.CreateCall(py_dict_getitem_func, {globals_dict, annot_name}, "existing_annot");
+                llvm::Value *is_null = builder.CreateIsNull(existing);
+
+                llvm::BasicBlock *create_block = llvm::BasicBlock::Create(*local_context, "create_annot", func);
+                llvm::BasicBlock *done_block = llvm::BasicBlock::Create(*local_context, "annot_done", func);
+
+                builder.CreateCondBr(is_null, create_block, done_block);
+
+                // Create new empty dict
+                builder.SetInsertPoint(create_block);
+                llvm::Value *new_dict = builder.CreateCall(py_dict_new_func, {}, "new_annot");
+                builder.CreateCall(py_dict_setitem_func, {globals_dict, annot_name, new_dict});
+                builder.CreateCall(py_decref_func, {new_dict}); // SetItem increfs
+                builder.CreateBr(done_block);
+
+                builder.SetInsertPoint(done_block);
+            }
+            // ========== Call Intrinsic 2 ==========
+            else if (instr.opcode == op::CALL_INTRINSIC_2)
+            {
+                // CALL_INTRINSIC_2: Two-argument intrinsic functions
+                // Python 3.13 operands:
+                //   1 = INTRINSIC_PREP_RERAISE_STAR - Exception group handling
+                //   2 = INTRINSIC_TYPEVAR_WITH_BOUND - typing.TypeVar with bound
+                //   3 = INTRINSIC_TYPEVAR_WITH_CONSTRAINTS - typing.TypeVar with constraints
+                //   4 = INTRINSIC_SET_FUNCTION_TYPE_PARAMS - Set __type_params__ on function
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *arg2 = stack.back();
+                    stack.pop_back();
+                    llvm::Value *arg1 = stack.back();
+                    stack.pop_back();
+
+                    int intrinsic = instr.arg;
+                    llvm::Value *result = nullptr;
+
+                    if (intrinsic == 4)
+                    {
+                        // INTRINSIC_SET_FUNCTION_TYPE_PARAMS
+                        // arg1 = function, arg2 = type_params tuple
+                        // Set function.__type_params__ = type_params
+                        llvm::Value *attr_name_ptr = llvm::ConstantInt::get(
+                            i64_type, reinterpret_cast<uint64_t>(PyUnicode_FromString("__type_params__")));
+                        llvm::Value *attr_name = builder.CreateIntToPtr(attr_name_ptr, ptr_type);
+                        builder.CreateCall(py_object_setattr_func, {arg1, attr_name, arg2});
+                        builder.CreateCall(py_decref_func, {arg2});
+                        // Return the function
+                        result = arg1;
+                    }
+                    else
+                    {
+                        // For other intrinsics (typing-related), return arg1 as fallback
+                        // These are rarely used and mainly for type annotations
+                        builder.CreateCall(py_decref_func, {arg2});
+                        result = arg1;
+                    }
+
+                    stack.push_back(result);
+                }
             }
         }
 
@@ -6930,6 +7849,10 @@ namespace justjit
                                     nb::list py_closure_cells, nb::list py_exception_table,
                                     const std::string &name, int param_count, int total_locals, int nlocals)
     {
+        // Debug flag for tracing generator execution
+        // Set to true to enable runtime trace output
+        const bool DEBUG_GENERATOR = true;
+        
         if (!jit)
         {
             return false;
@@ -6990,12 +7913,17 @@ namespace justjit
             const auto &instr = instructions[i];
             
             // Update simulated stack depth based on opcode effects
+            // These effects should match Python's dis.stack_effect() exactly
             if (instr.opcode == op::LOAD_CONST || instr.opcode == op::LOAD_FAST ||
-                instr.opcode == op::LOAD_FAST_CHECK || instr.opcode == op::LOAD_ATTR ||
-                instr.opcode == op::PUSH_NULL) {
+                instr.opcode == op::LOAD_FAST_CHECK || instr.opcode == op::PUSH_NULL) {
                 simulated_depth++;
+            } else if (instr.opcode == op::LOAD_ATTR) {
+                // LOAD_ATTR: effect is 0 for normal attr load, +1 for method load (low bit set)
+                bool is_method = (instr.arg & 1) != 0;
+                if (is_method) simulated_depth++;
+                // Normal attr load: pops object, pushes attr = net 0
             } else if (instr.opcode == op::LOAD_GLOBAL) {
-                // LOAD_GLOBAL pushes 1 value, optionally pushes NULL too
+                // LOAD_GLOBAL: pushes 1 value, +1 more if low bit is set (push NULL for method)
                 bool push_null = (instr.arg & 1) != 0;
                 simulated_depth++;
                 if (push_null) simulated_depth++;
@@ -7023,7 +7951,9 @@ namespace justjit
             } else if (instr.opcode == op::FOR_ITER) {
                 simulated_depth++; // Pushes next value (iterator stays on stack)
             } else if (instr.opcode == op::END_FOR) {
-                if (simulated_depth >= 2) simulated_depth -= 2; // Pops value and iterator
+                // END_FOR: In Python 3.13, only pops the iterator (effect -1)
+                // FOR_ITER jumps directly on exhaustion, no NULL is pushed
+                if (simulated_depth > 0) simulated_depth--;
             } else if (instr.opcode == op::COPY) {
                 simulated_depth++; // Duplicates stack value
             } else if (instr.opcode == op::SWAP) {
@@ -7051,6 +7981,125 @@ namespace justjit
             } else if (instr.opcode == op::END_SEND) {
                 // END_SEND: pops receiver and result, pushes result
                 if (simulated_depth >= 2) simulated_depth--;  // Net: -1
+            } else if (instr.opcode == op::CLEANUP_THROW) {
+                // CLEANUP_THROW: pops 3 values, pushes 1 result
+                if (simulated_depth >= 3) simulated_depth -= 2;  // Net: -2
+            } else if (instr.opcode == op::BUILD_MAP) {
+                // BUILD_MAP: pops 2*arg items (key-value pairs), pushes 1 dict
+                if (simulated_depth >= static_cast<size_t>(instr.arg * 2)) {
+                    simulated_depth -= (instr.arg * 2);
+                } else {
+                    simulated_depth = 0;
+                }
+                simulated_depth++;
+            } else if (instr.opcode == op::BUILD_SET) {
+                // BUILD_SET: pops arg items, pushes 1 set
+                if (simulated_depth >= static_cast<size_t>(instr.arg)) {
+                    simulated_depth -= instr.arg;
+                } else {
+                    simulated_depth = 0;
+                }
+                simulated_depth++;
+            } else if (instr.opcode == op::UNPACK_SEQUENCE) {
+                // UNPACK_SEQUENCE: pops 1, pushes arg items
+                if (simulated_depth > 0) simulated_depth--;
+                simulated_depth += instr.arg;
+            } else if (instr.opcode == op::UNPACK_EX) {
+                // UNPACK_EX: pops 1, pushes (count_before + 1 + count_after)
+                int count_before = instr.arg & 0xFF;
+                int count_after = (instr.arg >> 8) & 0xFF;
+                if (simulated_depth > 0) simulated_depth--;
+                simulated_depth += (count_before + 1 + count_after);
+            } else if (instr.opcode == op::CALL_KW) {
+                // CALL_KW: pops (callable + self_or_null + args + kwnames), pushes 1
+                int num_args = instr.arg;
+                if (simulated_depth >= static_cast<size_t>(num_args + 3)) {
+                    simulated_depth -= (num_args + 3);
+                } else {
+                    simulated_depth = 0;
+                }
+                simulated_depth++;
+            } else if (instr.opcode == op::CALL_FUNCTION_EX) {
+                // CALL_FUNCTION_EX: pops 3 or 4 (callable, null, args, [kwargs]), pushes 1
+                bool has_kwargs = (instr.arg & 1) != 0;
+                size_t pop_count = has_kwargs ? 4 : 3;
+                if (simulated_depth >= pop_count) {
+                    simulated_depth -= pop_count;
+                } else {
+                    simulated_depth = 0;
+                }
+                simulated_depth++;
+            } else if (instr.opcode == op::STORE_GLOBAL || instr.opcode == op::STORE_ATTR) {
+                // STORE_GLOBAL: pops 1 value
+                // STORE_ATTR: pops 2 (value and object)
+                if (instr.opcode == op::STORE_GLOBAL) {
+                    if (simulated_depth > 0) simulated_depth--;
+                } else {
+                    if (simulated_depth >= 2) simulated_depth -= 2;
+                }
+            } else if (instr.opcode == op::LIST_APPEND || instr.opcode == op::SET_ADD) {
+                // LIST_APPEND/SET_ADD: pops 1 item (list/set stays on stack)
+                if (simulated_depth > 0) simulated_depth--;
+            } else if (instr.opcode == op::MAP_ADD) {
+                // MAP_ADD: pops 2 (key, value), dict stays on stack
+                if (simulated_depth >= 2) simulated_depth -= 2;
+            } else if (instr.opcode == op::DELETE_SUBSCR) {
+                // DELETE_SUBSCR: pops 2 (key and container)
+                if (simulated_depth >= 2) simulated_depth -= 2;
+            } else if (instr.opcode == op::LOAD_DEREF || instr.opcode == op::LOAD_CLOSURE) {
+                // LOAD_DEREF/LOAD_CLOSURE: pushes 1
+                simulated_depth++;
+            } else if (instr.opcode == op::STORE_DEREF) {
+                // STORE_DEREF: pops 1
+                if (simulated_depth > 0) simulated_depth--;
+            } else if (instr.opcode == op::COPY_FREE_VARS || instr.opcode == op::MAKE_CELL) {
+                // No stack effect
+            } else if (instr.opcode == op::IMPORT_NAME) {
+                // IMPORT_NAME: pops 2 (fromlist, level), pushes 1 (module)
+                if (simulated_depth >= 2) simulated_depth--;
+            } else if (instr.opcode == op::IMPORT_FROM) {
+                // IMPORT_FROM: module stays on stack, pushes 1 attribute
+                simulated_depth++;
+            } else if (instr.opcode == op::MAKE_FUNCTION) {
+                // MAKE_FUNCTION: pops 1 (code), pushes 1 (function)
+                // Net: 0
+            } else if (instr.opcode == op::SET_FUNCTION_ATTRIBUTE) {
+                // SET_FUNCTION_ATTRIBUTE: pops 2 (func, value), pushes 1 (func)
+                if (simulated_depth >= 2) simulated_depth--;
+            } else if (instr.opcode == op::LIST_EXTEND || instr.opcode == op::SET_UPDATE ||
+                       instr.opcode == op::DICT_UPDATE || instr.opcode == op::DICT_MERGE) {
+                // These pop 1 iterable/dict, list/set/dict stays on stack
+                if (simulated_depth > 0) simulated_depth--;
+            } else if (instr.opcode == op::LOAD_FAST_LOAD_FAST) {
+                // LOAD_FAST_LOAD_FAST: pushes 2 values
+                simulated_depth += 2;
+            } else if (instr.opcode == op::STORE_FAST_STORE_FAST) {
+                // STORE_FAST_STORE_FAST: pops 2 values
+                if (simulated_depth >= 2) simulated_depth -= 2;
+            } else if (instr.opcode == op::STORE_FAST_LOAD_FAST) {
+                // STORE_FAST_LOAD_FAST: pops 1, pushes 1 (net: 0)
+            } else if (instr.opcode == op::LOAD_FAST_AND_CLEAR) {
+                // LOAD_FAST_AND_CLEAR: pushes 1
+                simulated_depth++;
+            } else if (instr.opcode == op::CONTAINS_OP || instr.opcode == op::IS_OP) {
+                // These pop 2, push 1
+                if (simulated_depth >= 2) simulated_depth--;
+            } else if (instr.opcode == op::BUILD_SLICE) {
+                // BUILD_SLICE: pops 2 or 3, pushes 1
+                int argc = instr.arg;
+                if (simulated_depth >= static_cast<size_t>(argc)) {
+                    simulated_depth -= argc;
+                }
+                simulated_depth++;
+            } else if (instr.opcode == op::BINARY_SLICE) {
+                // BINARY_SLICE: pops 3 (obj, start, stop), pushes 1
+                if (simulated_depth >= 3) simulated_depth -= 2;
+            } else if (instr.opcode == op::STORE_SLICE) {
+                // STORE_SLICE: pops 4 (value, obj, start, stop)
+                if (simulated_depth >= 4) simulated_depth -= 4;
+            } else if (instr.opcode == op::TO_BOOL || instr.opcode == op::UNARY_NEGATIVE ||
+                       instr.opcode == op::UNARY_NOT || instr.opcode == op::UNARY_INVERT) {
+                // Unary ops: 1 in, 1 out (no change)
             }
             
             // Track maximum depth
@@ -7071,14 +8120,18 @@ namespace justjit
         // Stack base: where we persist stack values in the locals array
         // Layout: [0..nlocals) = locals, [nlocals..total_locals) = stack persistence slots
         size_t stack_base = static_cast<size_t>(nlocals);
-        size_t max_stack_slots = static_cast<size_t>(total_locals - nlocals);  // Available slots for stack
         
-        // Safety check: ensure we have enough slots for the stack
-        if (max_stack_depth > max_stack_slots) {
-            // Not enough stack slots - this shouldn't happen with correct bytecode
-            // but we check to prevent buffer overflow
-            return false;
+        // Compute actual total_locals based on simulated stack depth
+        // The Python side passes co_stacksize, but our simulation may find different requirements
+        int actual_total_locals = nlocals + static_cast<int>(max_stack_depth);
+        if (actual_total_locals < total_locals) {
+            actual_total_locals = total_locals;  // Use the larger of the two
         }
+        
+        // Store the computed total_locals for get_generator_callable
+        generator_total_locals[name] = actual_total_locals;
+        
+        size_t max_stack_slots = static_cast<size_t>(actual_total_locals - nlocals);
 
         // Convert constants
         std::vector<int64_t> int_constants;
@@ -7211,7 +8264,7 @@ namespace justjit
         // Return None (the actual return value will be set by the calling code)
         llvm::Value *none_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_None));
         llvm::Value *py_none = builder.CreateIntToPtr(none_ptr, ptr_type);
-        builder.CreateCall(py_incref_func, {py_none});
+        builder.CreateCall(py_xincref_func, {py_none});
         builder.CreateRet(py_none);
 
         // Now generate code for state_0 (initial execution)
@@ -7348,7 +8401,7 @@ namespace justjit
                             *local_context, "after_decref_unwind", func);
                         builder.CreateCondBr(is_null, after_decref, decref_block);
                         builder.SetInsertPoint(decref_block);
-                        builder.CreateCall(py_decref_func, {val});
+                        builder.CreateCall(py_xdecref_func, {val});
                         builder.CreateBr(after_decref);
                         builder.SetInsertPoint(after_decref);
                     }
@@ -7390,6 +8443,36 @@ namespace justjit
             }
         };
 
+        // Identify pure exception handler offsets (only reachable via exception, not normal jumps)
+        // These blocks should NOT be entered via fallthrough during linear code generation
+        std::unordered_set<int> pure_exception_handler_offsets;
+        for (const auto &exc_entry : exception_table)
+        {
+            pure_exception_handler_offsets.insert(exc_entry.target);
+        }
+        // Remove offsets that are also normal jump targets
+        for (int target : jump_targets)
+        {
+            pure_exception_handler_offsets.erase(target);
+        }
+        
+        // For pure exception handlers, add a terminator (return NULL to propagate exception)
+        // This handles the case where the exception handler does cleanup and re-raises
+        for (int exc_offset : pure_exception_handler_offsets)
+        {
+            if (offset_blocks.count(exc_offset))
+            {
+                llvm::BasicBlock *exc_block = offset_blocks[exc_offset];
+                builder.SetInsertPoint(exc_block);
+                // Set state to -2 (exception occurred) and return NULL
+                builder.CreateStore(llvm::ConstantInt::get(i32_type, -2), state_ptr);
+                builder.CreateRet(llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)));
+            }
+        }
+        
+        // Reset builder to start block for main code generation
+        builder.SetInsertPoint(state_0);
+
         // Second pass: generate code
         // For generators, we need special handling at basic block boundaries:
         // Jump target blocks are only entered via jumps, not fallthrough.
@@ -7403,12 +8486,41 @@ namespace justjit
         std::unordered_set<llvm::BasicBlock*> initialized_blocks;
         initialized_blocks.insert(state_0);  // Initial block is already initialized
         
+        // Track if we're currently in a reachable code section
+        bool in_unreachable_section = false;
+        
+        // Helper lambda to emit debug trace call
+        auto emit_debug_trace = [&](int offset, const char* opname, size_t stack_depth, llvm::Value* value = nullptr) {
+            if (!DEBUG_GENERATOR) return;
+            
+            // Create string constant for opname
+            llvm::Value *opname_str = builder.CreateGlobalStringPtr(opname);
+            llvm::Value *offset_val = llvm::ConstantInt::get(i32_type, offset);
+            llvm::Value *depth_val = llvm::ConstantInt::get(i32_type, static_cast<int>(stack_depth));
+            llvm::Value *value_ptr = value ? value : llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
+            
+            builder.CreateCall(jit_debug_trace_func, {offset_val, opname_str, depth_val, value_ptr});
+        };
+        
         for (size_t i = start_idx; i < instructions.size(); ++i)
         {
             const auto &instr = instructions[i];
-
-            // Check if this offset is a jump target - need new block
-            if (offset_blocks.count(instr.offset))
+            
+            // If this is a pure exception handler offset that we've never reached via normal flow,
+            // we should NOT generate code for it during linear iteration.
+            // Instead, it will only be reached via exception branches.
+            if (pure_exception_handler_offsets.count(instr.offset))
+            {
+                // Check if we've already initialized this block (meaning it was reached via exception)
+                if (initialized_blocks.find(offset_blocks[instr.offset]) == initialized_blocks.end())
+                {
+                    // Mark as unreachable - we'll skip until we hit a reachable block
+                    in_unreachable_section = true;
+                }
+            }
+            
+            // Check if this offset is a normal jump target - need new block
+            if (offset_blocks.count(instr.offset) && !pure_exception_handler_offsets.count(instr.offset))
             {
                 // If we're not already in this block, we need to branch to it
                 if (offset_blocks[instr.offset] != current_block)
@@ -7419,7 +8531,8 @@ namespace justjit
                         for (size_t j = 0; j < stack.size(); ++j)
                         {
                             llvm::Value *val = stack[j];
-                            builder.CreateCall(py_incref_func, {val});
+                            // Use XINCREF to handle NULL values safely (e.g., from LOAD_FAST_AND_CLEAR)
+                            builder.CreateCall(py_xincref_func, {val});
                             llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, stack_base + j);
                             llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
                             builder.CreateStore(val, slot_ptr);
@@ -7441,8 +8554,14 @@ namespace justjit
                         initialized_blocks.insert(current_block);
                         
                         // Reload stack from persistent storage
-                        size_t expected_depth = target_stack_depth.count(instr.offset) 
-                            ? target_stack_depth[instr.offset] : 0;
+                        // For exception handlers, use the depth from the exception table
+                        // For normal jump targets, use the target_stack_depth map
+                        size_t expected_depth = 0;
+                        if (exception_handler_depth.count(instr.offset)) {
+                            expected_depth = exception_handler_depth[instr.offset];
+                        } else if (target_stack_depth.count(instr.offset)) {
+                            expected_depth = target_stack_depth[instr.offset];
+                        }
                         stack.clear();
                         for (size_t j = 0; j < expected_depth; ++j)
                         {
@@ -7453,6 +8572,15 @@ namespace justjit
                         }
                     }
                 }
+                
+                // If we reached a normal jump target, we're back in reachable code
+                in_unreachable_section = false;
+            }
+            
+            // Skip code generation for unreachable sections (pure exception handlers)
+            if (in_unreachable_section)
+            {
+                continue;
             }
 
             // Check if this is a resume point
@@ -7473,18 +8601,30 @@ namespace justjit
             }
             else if (instr.opcode == op::POP_TOP)
             {
+                emit_debug_trace(instr.offset, "POP_TOP (before)", stack.size());
+                
                 if (!stack.empty())
                 {
                     llvm::Value *val = stack.back();
+                    // Show what we're popping
+                    emit_debug_trace(instr.offset, "POP_TOP popping", stack.size(), val);
+                    
                     stack.pop_back();
-                    builder.CreateCall(py_decref_func, {val});
+                    // Use XDECREF to safely handle NULL values (e.g., from LOAD_FAST_AND_CLEAR)
+                    builder.CreateCall(py_xdecref_func, {val});
+                    
+                    emit_debug_trace(instr.offset, "POP_TOP (after)", stack.size());
                 }
             }
             else if (instr.opcode == op::LOAD_FAST || instr.opcode == op::LOAD_FAST_CHECK)
             {
+                emit_debug_trace(instr.offset, "LOAD_FAST (before)", stack.size());
+                
                 llvm::Value *val = load_local(instr.arg);
-                builder.CreateCall(py_incref_func, {val});
+                builder.CreateCall(py_xincref_func, {val});
                 stack.push_back(val);
+                
+                emit_debug_trace(instr.offset, "LOAD_FAST (after)", stack.size(), val);
             }
             else if (instr.opcode == op::LOAD_FAST_LOAD_FAST)
             {
@@ -7493,19 +8633,24 @@ namespace justjit
                 int second_local = instr.arg & 0xF;
                 
                 llvm::Value *val1 = load_local(first_local);
-                builder.CreateCall(py_incref_func, {val1});
+                builder.CreateCall(py_xincref_func, {val1});
                 stack.push_back(val1);
                 
                 llvm::Value *val2 = load_local(second_local);
-                builder.CreateCall(py_incref_func, {val2});
+                builder.CreateCall(py_xincref_func, {val2});
                 stack.push_back(val2);
             }
             else if (instr.opcode == op::STORE_FAST)
             {
+                emit_debug_trace(instr.offset, ("STORE_FAST " + std::to_string(instr.arg) + " (before)").c_str(), stack.size());
+                
                 if (!stack.empty())
                 {
                     llvm::Value *val = stack.back();
                     stack.pop_back();
+                    
+                    // Show what we're storing
+                    emit_debug_trace(instr.offset, ("STORE_FAST " + std::to_string(instr.arg) + " storing").c_str(), stack.size(), val);
 
                     // Decref old value if present
                     llvm::Value *old_val = load_local(instr.arg);
@@ -7518,12 +8663,98 @@ namespace justjit
                     builder.CreateCondBr(is_null, after_decref, decref_block);
 
                     builder.SetInsertPoint(decref_block);
-                    builder.CreateCall(py_decref_func, {old_val});
+                    builder.CreateCall(py_xdecref_func, {old_val});
                     builder.CreateBr(after_decref);
 
                     builder.SetInsertPoint(after_decref);
                     store_local(instr.arg, val);
+                    
+                    emit_debug_trace(instr.offset, ("STORE_FAST " + std::to_string(instr.arg) + " (after)").c_str(), stack.size());
                 }
+            }
+            // ========== STORE_FAST_STORE_FAST ==========
+            else if (instr.opcode == op::STORE_FAST_STORE_FAST)
+            {
+                // Python 3.13: Stores STACK[-1] into co_varnames[arg>>4] and STACK[-2] into co_varnames[arg&15]
+                int first_local = instr.arg >> 4;
+                int second_local = instr.arg & 0xF;
+
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *first_val = stack.back();
+                    stack.pop_back();
+                    llvm::Value *second_val = stack.back();
+                    stack.pop_back();
+
+                    llvm::Value *null_ptr = llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
+
+                    // Store first value with decref of old
+                    llvm::Value *old_val1 = load_local(first_local);
+                    llvm::Value *is_null1 = builder.CreateICmpEQ(old_val1, null_ptr);
+                    llvm::BasicBlock *decref_block1 = llvm::BasicBlock::Create(*local_context, "decref_ssss1", func);
+                    llvm::BasicBlock *store_block1 = llvm::BasicBlock::Create(*local_context, "store_ssss1", func);
+                    builder.CreateCondBr(is_null1, store_block1, decref_block1);
+                    builder.SetInsertPoint(decref_block1);
+                    builder.CreateCall(py_xdecref_func, {old_val1});
+                    builder.CreateBr(store_block1);
+                    builder.SetInsertPoint(store_block1);
+                    store_local(first_local, first_val);
+
+                    // Store second value with decref of old
+                    llvm::Value *old_val2 = load_local(second_local);
+                    llvm::Value *is_null2 = builder.CreateICmpEQ(old_val2, null_ptr);
+                    llvm::BasicBlock *decref_block2 = llvm::BasicBlock::Create(*local_context, "decref_ssss2", func);
+                    llvm::BasicBlock *store_block2 = llvm::BasicBlock::Create(*local_context, "store_ssss2", func);
+                    builder.CreateCondBr(is_null2, store_block2, decref_block2);
+                    builder.SetInsertPoint(decref_block2);
+                    builder.CreateCall(py_xdecref_func, {old_val2});
+                    builder.CreateBr(store_block2);
+                    builder.SetInsertPoint(store_block2);
+                    store_local(second_local, second_val);
+                    current_block = store_block2;
+                }
+            }
+            // ========== STORE_FAST_LOAD_FAST ==========
+            else if (instr.opcode == op::STORE_FAST_LOAD_FAST)
+            {
+                // Python 3.13: Stores TOS into co_varnames[arg>>4], then loads co_varnames[arg&15]
+                int store_local_idx = instr.arg >> 4;
+                int load_local_idx = instr.arg & 0xF;
+
+                if (!stack.empty())
+                {
+                    llvm::Value *val = stack.back();
+                    stack.pop_back();
+
+                    llvm::Value *null_ptr = llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
+
+                    // Decref and store
+                    llvm::Value *old_val = load_local(store_local_idx);
+                    llvm::Value *is_null = builder.CreateICmpEQ(old_val, null_ptr);
+                    llvm::BasicBlock *decref_block = llvm::BasicBlock::Create(*local_context, "decref_sflf", func);
+                    llvm::BasicBlock *store_block = llvm::BasicBlock::Create(*local_context, "store_sflf", func);
+                    builder.CreateCondBr(is_null, store_block, decref_block);
+                    builder.SetInsertPoint(decref_block);
+                    builder.CreateCall(py_xdecref_func, {old_val});
+                    builder.CreateBr(store_block);
+                    builder.SetInsertPoint(store_block);
+                    store_local(store_local_idx, val);
+                    current_block = store_block;
+
+                    // Load the other local
+                    llvm::Value *loaded = load_local(load_local_idx);
+                    builder.CreateCall(py_xincref_func, {loaded});
+                    stack.push_back(loaded);
+                }
+            }
+            // ========== LOAD_FAST_AND_CLEAR ==========
+            else if (instr.opcode == op::LOAD_FAST_AND_CLEAR)
+            {
+                // Push local value (or NULL) and clear the slot
+                llvm::Value *val = load_local(instr.arg);
+                builder.CreateCall(py_xincref_func, {val});
+                stack.push_back(val);
+                store_local(instr.arg, llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)));
             }
             else if (instr.opcode == op::LOAD_CONST)
             {
@@ -7532,7 +8763,7 @@ namespace justjit
                     llvm::Value *const_ptr = llvm::ConstantInt::get(
                         i64_type, reinterpret_cast<uint64_t>(obj_constants[instr.arg]));
                     llvm::Value *py_obj = builder.CreateIntToPtr(const_ptr, ptr_type);
-                    builder.CreateCall(py_incref_func, {py_obj});
+                    builder.CreateCall(py_xincref_func, {py_obj});
                     stack.push_back(py_obj);
                 }
                 else
@@ -7611,8 +8842,8 @@ namespace justjit
                         break;
                     }
 
-                    builder.CreateCall(py_decref_func, {lhs});
-                    builder.CreateCall(py_decref_func, {rhs});
+                    builder.CreateCall(py_xdecref_func, {lhs});
+                    builder.CreateCall(py_xdecref_func, {rhs});
                     
                     // Check for errors from BINARY_OP
                     check_error_and_branch_gen(instr.offset, result, "binop");
@@ -7633,8 +8864,8 @@ namespace justjit
                     llvm::Value *op_val = llvm::ConstantInt::get(i32_type, py_op);
                     llvm::Value *result = builder.CreateCall(py_object_richcompare_bool_func, {lhs, rhs, op_val});
 
-                    builder.CreateCall(py_decref_func, {lhs});
-                    builder.CreateCall(py_decref_func, {rhs});
+                    builder.CreateCall(py_xdecref_func, {lhs});
+                    builder.CreateCall(py_xdecref_func, {rhs});
 
                     // Convert int result to Python bool
                     llvm::Value *true_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_True));
@@ -7643,9 +8874,260 @@ namespace justjit
                     llvm::Value *bool_result = builder.CreateSelect(is_true,
                         builder.CreateIntToPtr(true_ptr, ptr_type),
                         builder.CreateIntToPtr(false_ptr, ptr_type));
-                    builder.CreateCall(py_incref_func, {bool_result});
+                    builder.CreateCall(py_xincref_func, {bool_result});
                     stack.push_back(bool_result);
                 }
+            }
+            // ========== CONTAINS_OP ==========
+            else if (instr.opcode == op::CONTAINS_OP)
+            {
+                // Implements 'in' / 'not in' test
+                // Stack: TOS=container, TOS1=value
+                // arg & 1: 0 = 'in', 1 = 'not in'
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *container = stack.back();
+                    stack.pop_back();
+                    llvm::Value *value = stack.back();
+                    stack.pop_back();
+                    bool invert = (instr.arg & 1) != 0;
+
+                    // PySequence_Contains returns 1 if contains, 0 if not, -1 on error
+                    llvm::Value *result = builder.CreateCall(py_sequence_contains_func, {container, value}, "contains");
+
+                    if (invert)
+                    {
+                        // 'not in': invert the result (1->0, 0->1)
+                        result = builder.CreateXor(result, llvm::ConstantInt::get(result->getType(), 1), "not_in");
+                    }
+
+                    // Decref consumed operands
+                    builder.CreateCall(py_xdecref_func, {value});
+                    builder.CreateCall(py_xdecref_func, {container});
+
+                    // Convert to Py_True/Py_False for proper bool semantics
+                    llvm::Value *py_true_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_True));
+                    llvm::Value *py_true = builder.CreateIntToPtr(py_true_ptr, ptr_type);
+                    llvm::Value *py_false_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_False));
+                    llvm::Value *py_false = builder.CreateIntToPtr(py_false_ptr, ptr_type);
+                    llvm::Value *is_true = builder.CreateICmpSGT(result, llvm::ConstantInt::get(result->getType(), 0));
+                    llvm::Value *bool_result = builder.CreateSelect(is_true, py_true, py_false);
+                    builder.CreateCall(py_xincref_func, {bool_result});
+                    stack.push_back(bool_result);
+                }
+            }
+            // ========== IS_OP ==========
+            else if (instr.opcode == op::IS_OP)
+            {
+                // Implements 'is' / 'is not' identity test
+                // Stack: TOS=rhs, TOS1=lhs
+                // arg & 1: 0 = 'is', 1 = 'is not'
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *rhs = stack.back();
+                    stack.pop_back();
+                    llvm::Value *lhs = stack.back();
+                    stack.pop_back();
+                    bool invert = (instr.arg & 1) != 0;
+
+                    // Pointer identity comparison
+                    llvm::Value *is_same = builder.CreateICmpEQ(lhs, rhs, "is");
+
+                    if (invert)
+                    {
+                        is_same = builder.CreateNot(is_same, "is_not");
+                    }
+
+                    // Decref consumed operands
+                    builder.CreateCall(py_xdecref_func, {lhs});
+                    builder.CreateCall(py_xdecref_func, {rhs});
+
+                    // Convert to Py_True/Py_False for proper bool semantics
+                    llvm::Value *py_true_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_True));
+                    llvm::Value *py_true = builder.CreateIntToPtr(py_true_ptr, ptr_type);
+                    llvm::Value *py_false_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_False));
+                    llvm::Value *py_false = builder.CreateIntToPtr(py_false_ptr, ptr_type);
+                    llvm::Value *bool_result = builder.CreateSelect(is_same, py_true, py_false);
+                    builder.CreateCall(py_xincref_func, {bool_result});
+                    stack.push_back(bool_result);
+                }
+            }
+            // ========== TO_BOOL ==========
+            else if (instr.opcode == op::TO_BOOL)
+            {
+                // Converts TOS to a boolean
+                if (!stack.empty())
+                {
+                    llvm::Value *val = stack.back();
+                    stack.pop_back();
+                    
+                    // PyObject_IsTrue returns 1 for true, 0 for false, -1 for error
+                    llvm::Value *is_true = builder.CreateCall(py_object_istrue_func, {val}, "is_true");
+                    builder.CreateCall(py_xdecref_func, {val});
+                    
+                    // Convert to Python bool
+                    llvm::Value *py_true_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_True));
+                    llvm::Value *py_true = builder.CreateIntToPtr(py_true_ptr, ptr_type);
+                    llvm::Value *py_false_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_False));
+                    llvm::Value *py_false = builder.CreateIntToPtr(py_false_ptr, ptr_type);
+                    llvm::Value *cmp = builder.CreateICmpSGT(is_true, llvm::ConstantInt::get(i32_type, 0));
+                    llvm::Value *bool_result = builder.CreateSelect(cmp, py_true, py_false);
+                    builder.CreateCall(py_xincref_func, {bool_result});
+                    stack.push_back(bool_result);
+                }
+            }
+            // ========== UNARY_NOT ==========
+            else if (instr.opcode == op::UNARY_NOT)
+            {
+                // Logical NOT: TOS = not TOS
+                if (!stack.empty())
+                {
+                    llvm::Value *val = stack.back();
+                    stack.pop_back();
+                    
+                    // PyObject_IsTrue returns 1 for true, 0 for false, -1 for error
+                    llvm::Value *is_true = builder.CreateCall(py_object_istrue_func, {val}, "is_true");
+                    builder.CreateCall(py_xdecref_func, {val});
+                    
+                    // Negate: true becomes false, false becomes true
+                    llvm::Value *py_true_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_True));
+                    llvm::Value *py_true = builder.CreateIntToPtr(py_true_ptr, ptr_type);
+                    llvm::Value *py_false_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_False));
+                    llvm::Value *py_false = builder.CreateIntToPtr(py_false_ptr, ptr_type);
+                    // If is_true > 0, result is False; else True
+                    llvm::Value *cmp = builder.CreateICmpSGT(is_true, llvm::ConstantInt::get(i32_type, 0));
+                    llvm::Value *bool_result = builder.CreateSelect(cmp, py_false, py_true);
+                    builder.CreateCall(py_xincref_func, {bool_result});
+                    stack.push_back(bool_result);
+                }
+            }
+            // ========== UNARY_NEGATIVE ==========
+            else if (instr.opcode == op::UNARY_NEGATIVE)
+            {
+                // Negate TOS: TOS = -TOS
+                if (!stack.empty())
+                {
+                    llvm::Value *val = stack.back();
+                    stack.pop_back();
+                    
+                    llvm::Value *result = builder.CreateCall(py_number_negative_func, {val}, "neg");
+                    builder.CreateCall(py_xdecref_func, {val});
+                    stack.push_back(result);
+                }
+            }
+            // ========== UNARY_INVERT ==========
+            else if (instr.opcode == op::UNARY_INVERT)
+            {
+                // Bitwise invert TOS: TOS = ~TOS
+                if (!stack.empty())
+                {
+                    llvm::Value *val = stack.back();
+                    stack.pop_back();
+                    
+                    llvm::Value *result = builder.CreateCall(py_number_invert_func, {val}, "invert");
+                    builder.CreateCall(py_xdecref_func, {val});
+                    stack.push_back(result);
+                }
+            }
+            // ========== BUILD_SLICE ==========
+            else if (instr.opcode == op::BUILD_SLICE)
+            {
+                // Build a slice object
+                // arg=2: slice(start, stop), arg=3: slice(start, stop, step)
+                int argc = instr.arg;
+                llvm::Value *py_none_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_None));
+                llvm::Value *py_none = builder.CreateIntToPtr(py_none_ptr, ptr_type);
+                
+                if (argc == 2 && stack.size() >= 2)
+                {
+                    llvm::Value *stop = stack.back(); stack.pop_back();
+                    llvm::Value *start = stack.back(); stack.pop_back();
+                    
+                    llvm::Value *slice = builder.CreateCall(py_slice_new_func, {start, stop, py_none}, "slice2");
+                    
+                    builder.CreateCall(py_xdecref_func, {start});
+                    builder.CreateCall(py_xdecref_func, {stop});
+                    
+                    stack.push_back(slice);
+                }
+                else if (argc == 3 && stack.size() >= 3)
+                {
+                    llvm::Value *step = stack.back(); stack.pop_back();
+                    llvm::Value *stop = stack.back(); stack.pop_back();
+                    llvm::Value *start = stack.back(); stack.pop_back();
+                    
+                    llvm::Value *slice = builder.CreateCall(py_slice_new_func, {start, stop, step}, "slice3");
+                    
+                    builder.CreateCall(py_xdecref_func, {start});
+                    builder.CreateCall(py_xdecref_func, {stop});
+                    builder.CreateCall(py_xdecref_func, {step});
+                    
+                    stack.push_back(slice);
+                }
+            }
+            // ========== BINARY_SLICE ==========
+            else if (instr.opcode == op::BINARY_SLICE)
+            {
+                // TOS = TOS2[TOS1:TOS]  (slice from TOS1 to TOS)
+                if (stack.size() >= 3)
+                {
+                    llvm::Value *stop = stack.back(); stack.pop_back();
+                    llvm::Value *start = stack.back(); stack.pop_back();
+                    llvm::Value *obj = stack.back(); stack.pop_back();
+                    
+                    // Build slice object
+                    llvm::Value *py_none_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_None));
+                    llvm::Value *py_none = builder.CreateIntToPtr(py_none_ptr, ptr_type);
+                    llvm::Value *slice = builder.CreateCall(py_slice_new_func, {start, stop, py_none}, "slice");
+                    
+                    // Get item with slice
+                    llvm::Value *result = builder.CreateCall(py_object_getitem_func, {obj, slice}, "sliced");
+                    
+                    // Decref consumed values
+                    builder.CreateCall(py_xdecref_func, {slice});
+                    builder.CreateCall(py_xdecref_func, {obj});
+                    builder.CreateCall(py_xdecref_func, {start});
+                    builder.CreateCall(py_xdecref_func, {stop});
+                    
+                    stack.push_back(result);
+                }
+            }
+            // ========== STORE_SLICE ==========
+            else if (instr.opcode == op::STORE_SLICE)
+            {
+                // TOS2[TOS1:TOS] = TOS3
+                if (stack.size() >= 4)
+                {
+                    llvm::Value *stop = stack.back(); stack.pop_back();
+                    llvm::Value *start = stack.back(); stack.pop_back();
+                    llvm::Value *obj = stack.back(); stack.pop_back();
+                    llvm::Value *value = stack.back(); stack.pop_back();
+                    
+                    // Build slice object
+                    llvm::Value *py_none_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_None));
+                    llvm::Value *py_none = builder.CreateIntToPtr(py_none_ptr, ptr_type);
+                    llvm::Value *slice = builder.CreateCall(py_slice_new_func, {start, stop, py_none}, "slice");
+                    
+                    // Set item with slice
+                    builder.CreateCall(py_object_setitem_func, {obj, slice, value});
+                    
+                    // Decref consumed values
+                    builder.CreateCall(py_xdecref_func, {slice});
+                    builder.CreateCall(py_xdecref_func, {obj});
+                    builder.CreateCall(py_xdecref_func, {start});
+                    builder.CreateCall(py_xdecref_func, {stop});
+                    builder.CreateCall(py_xdecref_func, {value});
+                }
+            }
+            // ========== NOP ==========
+            else if (instr.opcode == op::NOP)
+            {
+                // No operation - do nothing
+            }
+            // ========== CACHE ==========
+            else if (instr.opcode == op::CACHE)
+            {
+                // Cache slot - do nothing (used by adaptive interpreter)
             }
             else if (instr.opcode == op::LOAD_GLOBAL)
             {
@@ -7711,7 +9193,7 @@ namespace justjit
                     result_phi->addIncoming(global_obj, found_block);
 
                     // Incref the result (PyDict_GetItem returns borrowed reference)
-                    builder.CreateCall(py_incref_func, {result_phi});
+                    builder.CreateCall(py_xincref_func, {result_phi});
 
                     stack.push_back(result_phi);
 
@@ -7745,7 +9227,7 @@ namespace justjit
                     llvm::Value *result = builder.CreateCall(py_object_getattr_func, {obj, attr_name});
 
                     // Decref the object we consumed
-                    builder.CreateCall(py_decref_func, {obj});
+                    builder.CreateCall(py_xdecref_func, {obj});
 
                     // Check for errors from LOAD_ATTR (AttributeError)
                     check_error_and_branch_gen(instr.offset, result, "loadattr");
@@ -7849,10 +9331,10 @@ namespace justjit
                         llvm::Value *value = values[count - 1 - j];
                         // PyDict_SetItem does NOT steal references
                         builder.CreateCall(py_dict_setitem_func, {dict, key, value});
-                        builder.CreateCall(py_decref_func, {value});
+                        builder.CreateCall(py_xdecref_func, {value});
                     }
                     
-                    builder.CreateCall(py_decref_func, {keys_tuple});
+                    builder.CreateCall(py_xdecref_func, {keys_tuple});
                     stack.push_back(dict);
                 }
             }
@@ -7873,10 +9355,10 @@ namespace justjit
                     builder.CreateCall(py_object_setitem_func, {container, key, value});
 
                     // Decref consumed references
-                    builder.CreateCall(py_decref_func, {key});
-                    builder.CreateCall(py_decref_func, {value});
+                    builder.CreateCall(py_xdecref_func, {key});
+                    builder.CreateCall(py_xdecref_func, {value});
                     // container is borrowed (it stays alive)
-                    builder.CreateCall(py_decref_func, {container});
+                    builder.CreateCall(py_xdecref_func, {container});
                 }
             }
             else if (instr.opcode == op::BINARY_SUBSCR)
@@ -7893,8 +9375,8 @@ namespace justjit
                     llvm::Value *result = builder.CreateCall(py_object_getitem_func, {container, key});
 
                     // Decref consumed references
-                    builder.CreateCall(py_decref_func, {key});
-                    builder.CreateCall(py_decref_func, {container});
+                    builder.CreateCall(py_xdecref_func, {key});
+                    builder.CreateCall(py_xdecref_func, {container});
 
                     // Check for errors from BINARY_SUBSCR (KeyError, IndexError, etc.)
                     check_error_and_branch_gen(instr.offset, result, "subscr");
@@ -7946,10 +9428,10 @@ namespace justjit
                     llvm::Value *result = builder.CreateCall(py_object_call_func, {callable, args_tuple, null_kwargs});
 
                     // Decrement args_tuple refcount
-                    builder.CreateCall(py_decref_func, {args_tuple});
+                    builder.CreateCall(py_xdecref_func, {args_tuple});
 
                     // Decref callable
-                    builder.CreateCall(py_decref_func, {callable});
+                    builder.CreateCall(py_xdecref_func, {callable});
 
                     // Handle self_or_null decref
                     llvm::Value *null_check = llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
@@ -7961,7 +9443,7 @@ namespace justjit
                     builder.CreateCondBr(has_self, decref_self_block, after_decref_self);
 
                     builder.SetInsertPoint(decref_self_block);
-                    builder.CreateCall(py_decref_func, {self_or_null});
+                    builder.CreateCall(py_xdecref_func, {self_or_null});
                     builder.CreateBr(after_decref_self);
 
                     builder.SetInsertPoint(after_decref_self);
@@ -7975,6 +9457,8 @@ namespace justjit
             }
             else if (instr.opcode == op::YIELD_VALUE)
             {
+                emit_debug_trace(instr.offset, "YIELD_VALUE (before)", stack.size());
+                
                 // This is the core of generator support!
                 // We must spill the remaining stack to persistent storage before yielding
                 if (!stack.empty())
@@ -7982,13 +9466,16 @@ namespace justjit
                     llvm::Value *yield_val = stack.back();
                     stack.pop_back();
                     
+                    // Debug: trace the value being yielded
+                    emit_debug_trace(instr.offset, "YIELD_VALUE yielding", stack.size(), yield_val);
+                    
                     // SPILL STACK: Save remaining stack values to locals[stack_base + j]
                     // This persists them across the yield/resume boundary
                     for (size_t j = 0; j < stack.size(); ++j)
                     {
                         llvm::Value *val = stack[j];
-                        // Incref: we're creating a new reference in the locals array
-                        builder.CreateCall(py_incref_func, {val});
+                        // Use XINCREF to handle NULL values safely (e.g., from LOAD_FAST_AND_CLEAR)
+                        builder.CreateCall(py_xincref_func, {val});
                         // Store to locals[stack_base + j]
                         llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, stack_base + j);
                         llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
@@ -8021,18 +9508,18 @@ namespace justjit
                             llvm::Value *restored_val = builder.CreateLoad(ptr_type, slot_ptr);
                             
                             // Incref for the stack reference
-                            builder.CreateCall(py_incref_func, {restored_val});
+                            builder.CreateCall(py_xincref_func, {restored_val});
                             stack.push_back(restored_val);
                             
                             // Decref the stored reference and clear the slot
-                            builder.CreateCall(py_decref_func, {restored_val});
+                            builder.CreateCall(py_xdecref_func, {restored_val});
                             builder.CreateStore(
                                 llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)),
                                 slot_ptr);
                         }
                         
                         // Push the sent value onto the stack
-                        builder.CreateCall(py_incref_func, {sent_value});
+                        builder.CreateCall(py_xincref_func, {sent_value});
                         stack.push_back(sent_value);
                         current_yield_idx++;
                     }
@@ -8052,7 +9539,7 @@ namespace justjit
                 {
                     llvm::Value *none_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_None));
                     llvm::Value *py_none = builder.CreateIntToPtr(none_ptr, ptr_type);
-                    builder.CreateCall(py_incref_func, {py_none});
+                    builder.CreateCall(py_xincref_func, {py_none});
                     builder.CreateRet(py_none);
                 }
             }
@@ -8064,7 +9551,7 @@ namespace justjit
                     llvm::Value *const_ptr = llvm::ConstantInt::get(
                         i64_type, reinterpret_cast<uint64_t>(obj_constants[instr.arg]));
                     llvm::Value *py_obj = builder.CreateIntToPtr(const_ptr, ptr_type);
-                    builder.CreateCall(py_incref_func, {py_obj});
+                    builder.CreateCall(py_xincref_func, {py_obj});
                     builder.CreateRet(py_obj);
                 }
                 else
@@ -8089,7 +9576,7 @@ namespace justjit
                     for (size_t j = 0; j < stack.size(); ++j)
                     {
                         llvm::Value *val = stack[j];
-                        builder.CreateCall(py_incref_func, {val});
+                        builder.CreateCall(py_xincref_func, {val});
                         llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, stack_base + j);
                         llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
                         builder.CreateStore(val, slot_ptr);
@@ -8123,7 +9610,7 @@ namespace justjit
                     for (size_t j = 0; j < stack.size(); ++j)
                     {
                         llvm::Value *val = stack[j];
-                        builder.CreateCall(py_incref_func, {val});
+                        builder.CreateCall(py_xincref_func, {val});
                         llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, stack_base + j);
                         llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
                         builder.CreateStore(val, slot_ptr);
@@ -8152,7 +9639,7 @@ namespace justjit
                     for (size_t j = 0; j < stack.size(); ++j)
                     {
                         llvm::Value *val = stack[j];
-                        builder.CreateCall(py_incref_func, {val});
+                        builder.CreateCall(py_xincref_func, {val});
                         llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, stack_base + j);
                         llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
                         builder.CreateStore(val, slot_ptr);
@@ -8175,7 +9662,7 @@ namespace justjit
                     stack.pop_back();
 
                     llvm::Value *is_true = builder.CreateCall(py_object_istrue_func, {cond});
-                    builder.CreateCall(py_decref_func, {cond});
+                    builder.CreateCall(py_xdecref_func, {cond});
 
                     llvm::Value *cmp = builder.CreateICmpEQ(is_true, llvm::ConstantInt::get(i32_type, 0));
 
@@ -8190,7 +9677,7 @@ namespace justjit
                     for (size_t j = 0; j < stack.size(); ++j)
                     {
                         llvm::Value *val = stack[j];
-                        builder.CreateCall(py_incref_func, {val});
+                        builder.CreateCall(py_xincref_func, {val});
                         llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, stack_base + j);
                         llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
                         builder.CreateStore(val, slot_ptr);
@@ -8226,7 +9713,7 @@ namespace justjit
                     stack.pop_back();
 
                     llvm::Value *is_true = builder.CreateCall(py_object_istrue_func, {cond});
-                    builder.CreateCall(py_decref_func, {cond});
+                    builder.CreateCall(py_xdecref_func, {cond});
 
                     llvm::Value *cmp = builder.CreateICmpNE(is_true, llvm::ConstantInt::get(i32_type, 0));
 
@@ -8241,7 +9728,7 @@ namespace justjit
                     for (size_t j = 0; j < stack.size(); ++j)
                     {
                         llvm::Value *val = stack[j];
-                        builder.CreateCall(py_incref_func, {val});
+                        builder.CreateCall(py_xincref_func, {val});
                         llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, stack_base + j);
                         llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
                         builder.CreateStore(val, slot_ptr);
@@ -8271,6 +9758,8 @@ namespace justjit
             }
             else if (instr.opcode == op::FOR_ITER)
             {
+                emit_debug_trace(instr.offset, "FOR_ITER (before)", stack.size());
+                
                 // Get iterator from TOS
                 if (!stack.empty())
                 {
@@ -8293,7 +9782,7 @@ namespace justjit
                     for (size_t j = 0; j < stack.size(); ++j)
                     {
                         llvm::Value *val = stack[j];
-                        builder.CreateCall(py_incref_func, {val});
+                        builder.CreateCall(py_xincref_func, {val});
                         llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, stack_base + j);
                         llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
                         builder.CreateStore(val, slot_ptr);
@@ -8329,16 +9818,20 @@ namespace justjit
             }
             else if (instr.opcode == op::END_FOR)
             {
-                // END_FOR: pop both the loop value and the iterator
-                // At this point we came from FOR_ITER's exit path
-                // The stack should have: [..., iterator, value] but value is NULL
-                // Actually END_FOR in Python 3.12+ just pops the iterator (value was already NULL)
+                emit_debug_trace(instr.offset, "END_FOR (before)", stack.size());
+                
+                // END_FOR: In Python 3.13, only pops the iterator (stack effect -1)
+                // FOR_ITER jumps directly to END_FOR on exhaustion, no NULL is pushed
                 if (!stack.empty())
                 {
-                    // Pop the NULL value that FOR_ITER would have pushed (but didn't since iter exhausted)
-                    // Actually in our impl, we need to pop iterator
-                    llvm::Value *iter = stack.back(); stack.pop_back();
-                    builder.CreateCall(py_decref_func, {iter});
+                    llvm::Value *iter = stack.back();
+                    // Show what we're popping
+                    emit_debug_trace(instr.offset, "END_FOR popping", stack.size(), iter);
+                    
+                    stack.pop_back();
+                    builder.CreateCall(py_xdecref_func, {iter});
+                    
+                    emit_debug_trace(instr.offset, "END_FOR (after)", stack.size());
                 }
             }
             else if (instr.opcode == op::GET_ITER)
@@ -8348,7 +9841,7 @@ namespace justjit
                     llvm::Value *obj = stack.back();
                     stack.pop_back();
                     llvm::Value *iter = builder.CreateCall(py_object_getiter_func, {obj});
-                    builder.CreateCall(py_decref_func, {obj});
+                    builder.CreateCall(py_xdecref_func, {obj});
                     stack.push_back(iter);
                 }
             }
@@ -8364,7 +9857,7 @@ namespace justjit
                     llvm::Value *py_none = builder.CreateIntToPtr(none_ptr, ptr_type);
                     llvm::Value *is_none = builder.CreateICmpEQ(val, py_none);
 
-                    builder.CreateCall(py_decref_func, {val});
+                    builder.CreateCall(py_xdecref_func, {val});
 
                     int target = instr.argval;
                     if (!offset_blocks.count(target))
@@ -8392,7 +9885,7 @@ namespace justjit
                     llvm::Value *py_none = builder.CreateIntToPtr(none_ptr, ptr_type);
                     llvm::Value *is_not_none = builder.CreateICmpNE(val, py_none);
 
-                    builder.CreateCall(py_decref_func, {val});
+                    builder.CreateCall(py_xdecref_func, {val});
 
                     int target = instr.argval;
                     if (!offset_blocks.count(target))
@@ -8415,7 +9908,7 @@ namespace justjit
                 if (idx > 0 && static_cast<size_t>(idx) <= stack.size())
                 {
                     llvm::Value *val = stack[stack.size() - idx];
-                    builder.CreateCall(py_incref_func, {val});
+                    builder.CreateCall(py_xincref_func, {val});
                     stack.push_back(val);
                 }
             }
@@ -8470,7 +9963,7 @@ namespace justjit
                     llvm::Value *awaitable = builder.CreateCall(get_awaitable_helper, {obj});
                     
                     // Decref the original object if different
-                    builder.CreateCall(py_decref_func, {obj});
+                    builder.CreateCall(py_xdecref_func, {obj});
                     
                     stack.push_back(awaitable);
                 }
@@ -8507,7 +10000,7 @@ namespace justjit
                     llvm::Value *send_result = builder.CreateCall(py_iter_send_func, {receiver, value, result_ptr});
                     
                     // Decref the value we sent
-                    builder.CreateCall(py_decref_func, {value});
+                    builder.CreateCall(py_xdecref_func, {value});
                     
                     // Load the result
                     llvm::Value *result = builder.CreateLoad(ptr_type, result_ptr);
@@ -8533,23 +10026,57 @@ namespace justjit
                     // The next instruction should handle this (usually YIELD_VALUE)
                     builder.CreateBr(continue_block);
                     
-                    // Handle PYGEN_RETURN - sub-iterator finished, jump to target
+                    // Handle PYGEN_RETURN - sub-iterator finished
+                    // We handle END_SEND cleanup inline here rather than jumping to it,
+                    // because the stack state differs between PYGEN_RETURN and normal path
                     builder.SetInsertPoint(return_block);
-                    // The receiver will be removed by END_SEND
-                    // Jump to the target offset
-                    int target = instr.argval;  // Jump target
-                    if (!offset_blocks.count(target))
+                    
+                    // For PYGEN_RETURN: receiver is still on stack, result is the return value
+                    // Decref receiver (sub-iterator is done)
+                    builder.CreateCall(py_xdecref_func, {receiver});
+                    
+                    // Pop receiver from compile-time stack (we're in return_block, 
+                    // but this affects the logical stack state for the target)
+                    // After this, result will be the top of stack
+                    
+                    // Find the instruction AFTER END_SEND to jump to
+                    // END_SEND is at offset 'target', we need the next instruction
+                    int target = instr.argval;  // Jump target (END_SEND offset)
+                    int after_end_send = target + 2;  // Next instruction offset
+                    
+                    // Store result to the stack persistence slot (replacing receiver)
+                    // The compile-time stack currently has: [..., receiver]
+                    // receiver is at index stack.size() - 1
+                    // After PYGEN_RETURN, END_SEND would leave: [..., result]
+                    // So we store at receiver's position
+                    size_t receiver_slot = stack.size() - 1;
+                    llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, stack_base + receiver_slot);
+                    llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
+                    builder.CreateCall(py_xincref_func, {result});
+                    builder.CreateStore(result, slot_ptr);
+                    
+                    // Create/get block for the instruction after END_SEND
+                    if (!offset_blocks.count(after_end_send))
                     {
-                        offset_blocks[target] = llvm::BasicBlock::Create(
-                            *local_context, "send_done_" + std::to_string(target), func);
+                        offset_blocks[after_end_send] = llvm::BasicBlock::Create(
+                            *local_context, "after_end_send_" + std::to_string(after_end_send), func);
                     }
-                    builder.CreateBr(offset_blocks[target]);
+                    
+                    // Record the expected stack depth at the target
+                    // After END_SEND: receiver is gone, result is on top
+                    // Stack depth is same as before SEND started the loop (receiver position)
+                    if (!target_stack_depth.count(after_end_send))
+                    {
+                        target_stack_depth[after_end_send] = stack.size();  // result replaces receiver
+                    }
+                    
+                    builder.CreateBr(offset_blocks[after_end_send]);
                     
                     // Handle error
                     builder.SetInsertPoint(error_block);
                     // Clean up receiver before returning error
-                    builder.CreateCall(py_decref_func, {receiver});
-                    stack.pop_back();  // Remove receiver from compile-time stack
+                    builder.CreateCall(py_xdecref_func, {receiver});
+                    // NOTE: Don't modify compile-time stack here - error path returns immediately
                     // Return NULL to propagate error
                     builder.CreateStore(llvm::ConstantInt::get(i32_type, -2), state_ptr);
                     builder.CreateRet(llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)));
@@ -8574,10 +10101,91 @@ namespace justjit
                     stack.pop_back();
                     
                     // Decref receiver
-                    builder.CreateCall(py_decref_func, {receiver});
+                    builder.CreateCall(py_xdecref_func, {receiver});
                     
                     // Push result back
                     stack.push_back(result);
+                }
+            }
+            else if (instr.opcode == op::CLEANUP_THROW)
+            {
+                // CLEANUP_THROW: Handles an exception raised during throw()/close()
+                // If STACK[-1] is StopIteration, pop 3 values and push its .value
+                // Otherwise, re-raise STACK[-1]
+                // STACK: [..., exc_type_or_val?, sub_iter, exc] -> [..., value] or reraise
+                if (stack.size() >= 3)
+                {
+                    llvm::Value *exc = stack.back();
+                    stack.pop_back();
+                    llvm::Value *sub_iter = stack.back();
+                    stack.pop_back();
+                    llvm::Value *last_sent_val = stack.back();
+                    stack.pop_back();
+                    
+                    // Check if exc is a StopIteration
+                    // Get the StopIteration type
+                    llvm::Value *stop_iteration_type = llvm::ConstantInt::get(i64_type, 
+                        reinterpret_cast<uint64_t>(PyExc_StopIteration));
+                    llvm::Value *stop_iter_ptr = builder.CreateIntToPtr(stop_iteration_type, ptr_type);
+                    
+                    // Get the type of exc
+                    llvm::Value *exc_type = builder.CreateCall(py_object_type_func, {exc}, "exc_type");
+                    
+                    // Check if it's a StopIteration instance
+                    llvm::Value *is_stop_iter = builder.CreateCall(py_exception_matches_func,
+                        {exc_type, stop_iter_ptr}, "is_stop_iter");
+                    builder.CreateCall(py_xdecref_func, {exc_type});
+                    
+                    llvm::BasicBlock *stop_iter_block = llvm::BasicBlock::Create(
+                        *local_context, "cleanup_throw_stop_" + std::to_string(i), func);
+                    llvm::BasicBlock *reraise_block = llvm::BasicBlock::Create(
+                        *local_context, "cleanup_throw_reraise_" + std::to_string(i), func);
+                    llvm::BasicBlock *continue_block = llvm::BasicBlock::Create(
+                        *local_context, "cleanup_throw_cont_" + std::to_string(i), func);
+                    
+                    llvm::Value *is_match = builder.CreateICmpNE(is_stop_iter,
+                        llvm::ConstantInt::get(i32_type, 0));
+                    builder.CreateCondBr(is_match, stop_iter_block, reraise_block);
+                    
+                    // Handle StopIteration - extract .value and push it
+                    builder.SetInsertPoint(stop_iter_block);
+                    // Get the .value attribute from StopIteration
+                    llvm::Value *value_attr = builder.CreateCall(
+                        py_object_getattr_func, 
+                        {exc, builder.CreateGlobalStringPtr("value")},
+                        "stop_iter_value");
+                    // If .value is NULL, use Py_None
+                    llvm::Value *is_null = builder.CreateICmpEQ(value_attr, 
+                        llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)));
+                    // Clear any error from failed attribute access
+                    builder.CreateCall(py_err_clear_func, {});
+                    llvm::Value *py_none = builder.CreateIntToPtr(
+                        llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(Py_None)), ptr_type);
+                    llvm::Value *result_val = builder.CreateSelect(is_null, py_none, value_attr);
+                    builder.CreateCall(py_xincref_func, {result_val});
+                    // Decref the exception and sub_iter and last_sent_val
+                    builder.CreateCall(py_xdecref_func, {exc});
+                    builder.CreateCall(py_xdecref_func, {sub_iter});
+                    builder.CreateCall(py_xdecref_func, {last_sent_val});
+                    builder.CreateBr(continue_block);
+                    
+                    // Handle reraise - restore exception and return NULL
+                    builder.SetInsertPoint(reraise_block);
+                    // Re-raise the exception by restoring it and returning NULL
+                    builder.CreateCall(py_err_restore_func, {
+                        builder.CreateCall(py_object_type_func, {exc}),
+                        exc,
+                        llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0))
+                    });
+                    builder.CreateCall(py_xdecref_func, {sub_iter});
+                    builder.CreateCall(py_xdecref_func, {last_sent_val});
+                    builder.CreateStore(llvm::ConstantInt::get(i32_type, -2), state_ptr);
+                    builder.CreateRet(llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)));
+                    
+                    // Continue with the result
+                    builder.SetInsertPoint(continue_block);
+                    current_block = continue_block;
+                    stack.push_back(result_val);
                 }
             }
             // ========== Exception Handling Opcodes for Generators ==========
@@ -8635,8 +10243,8 @@ namespace justjit
                     llvm::Value *match_result = builder.CreateCall(py_exception_matches_func,
                                                                    {actual_type, exc_type}, "exc_match");
 
-                    builder.CreateCall(py_decref_func, {actual_type});
-                    builder.CreateCall(py_decref_func, {exc_type});
+                    builder.CreateCall(py_xdecref_func, {actual_type});
+                    builder.CreateCall(py_xdecref_func, {exc_type});
 
                     llvm::Value *is_match = builder.CreateICmpNE(match_result,
                                                                  llvm::ConstantInt::get(i32_type, 0), "is_match");
@@ -8646,7 +10254,7 @@ namespace justjit
                     llvm::Value *py_false = builder.CreateIntToPtr(py_false_ptr, ptr_type);
 
                     llvm::Value *result = builder.CreateSelect(is_match, py_true, py_false, "match_bool");
-                    builder.CreateCall(py_incref_func, {result});
+                    builder.CreateCall(py_xincref_func, {result});
                     stack.push_back(result);
                 }
             }
@@ -8675,22 +10283,22 @@ namespace justjit
                     {
                     case 1: // INTRINSIC_PRINT
                         // Debug print - just consume and return None
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         {
                             llvm::Value *py_none_ptr = llvm::ConstantInt::get(
                                 i64_type, reinterpret_cast<uint64_t>(Py_None));
                             result = builder.CreateIntToPtr(py_none_ptr, ptr_type);
-                            builder.CreateCall(py_incref_func, {result});
+                            builder.CreateCall(py_xincref_func, {result});
                         }
                         break;
                     case 3: // INTRINSIC_STOPITERATION_ERROR
                         // Handle StopIteration - just decref and push None
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         {
                             llvm::Value *py_none_ptr = llvm::ConstantInt::get(
                                 i64_type, reinterpret_cast<uint64_t>(Py_None));
                             result = builder.CreateIntToPtr(py_none_ptr, ptr_type);
-                            builder.CreateCall(py_incref_func, {result});
+                            builder.CreateCall(py_xincref_func, {result});
                         }
                         break;
                     case 4: // INTRINSIC_ASYNC_GEN_WRAP
@@ -8699,7 +10307,7 @@ namespace justjit
                         break;
                     case 5: // INTRINSIC_UNARY_POSITIVE
                         result = builder.CreateCall(py_number_positive_func, {arg});
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         check_error_and_branch_gen(instr.offset, result, "unary_positive");
                         break;
                     case 6: // INTRINSIC_LIST_TO_TUPLE
@@ -8709,7 +10317,7 @@ namespace justjit
                         llvm::FunctionCallee list_as_tuple_func = module->getOrInsertFunction(
                             "PyList_AsTuple", list_as_tuple_type);
                         result = builder.CreateCall(list_as_tuple_func, {arg});
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         check_error_and_branch_gen(instr.offset, result, "list_to_tuple");
                         break;
                     }
@@ -8732,7 +10340,7 @@ namespace justjit
                             {arg, llvm::ConstantInt::get(i64_type, 1)});
                         
                         result = builder.CreateCall(get_item_func, {origin, args});
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         check_error_and_branch_gen(instr.offset, result, "subscript_generic");
                         break;
                     }
@@ -8765,9 +10373,9 @@ namespace justjit
                         llvm::Value *kwargs = builder.CreateIntToPtr(py_none_ptr_kw, ptr_type);
                         result = builder.CreateCall(call_func, {typevar_class, arg, kwargs});
                         
-                        builder.CreateCall(py_decref_func, {typevar_class});
-                        builder.CreateCall(py_decref_func, {typing_mod});
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {typevar_class});
+                        builder.CreateCall(py_xdecref_func, {typing_mod});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         
                         check_error_and_branch_gen(instr.offset, result, "typevar");
                         break;
@@ -8801,9 +10409,9 @@ namespace justjit
                         llvm::Value *kwargs = builder.CreateIntToPtr(py_none_ptr_kw, ptr_type);
                         result = builder.CreateCall(call_func, {paramspec_class, arg, kwargs});
                         
-                        builder.CreateCall(py_decref_func, {paramspec_class});
-                        builder.CreateCall(py_decref_func, {typing_mod});
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {paramspec_class});
+                        builder.CreateCall(py_xdecref_func, {typing_mod});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         
                         check_error_and_branch_gen(instr.offset, result, "paramspec");
                         break;
@@ -8837,9 +10445,9 @@ namespace justjit
                         llvm::Value *kwargs = builder.CreateIntToPtr(py_none_ptr_kw, ptr_type);
                         result = builder.CreateCall(call_func, {typevartuple_class, arg, kwargs});
                         
-                        builder.CreateCall(py_decref_func, {typevartuple_class});
-                        builder.CreateCall(py_decref_func, {typing_mod});
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {typevartuple_class});
+                        builder.CreateCall(py_xdecref_func, {typing_mod});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         
                         check_error_and_branch_gen(instr.offset, result, "typevartuple");
                         break;
@@ -8873,9 +10481,9 @@ namespace justjit
                         llvm::Value *kwargs = builder.CreateIntToPtr(py_none_ptr_kw, ptr_type);
                         result = builder.CreateCall(call_func, {typealias_class, arg, kwargs});
                         
-                        builder.CreateCall(py_decref_func, {typealias_class});
-                        builder.CreateCall(py_decref_func, {typing_mod});
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {typealias_class});
+                        builder.CreateCall(py_xdecref_func, {typing_mod});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         
                         check_error_and_branch_gen(instr.offset, result, "typealias");
                         break;
@@ -8912,9 +10520,9 @@ namespace justjit
                         builder.CreateCall(dict_merge_func, 
                             {locals, mod_dict, llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
                         
-                        builder.CreateCall(py_decref_func, {mod_dict});
-                        builder.CreateCall(py_decref_func, {locals});
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {mod_dict});
+                        builder.CreateCall(py_xdecref_func, {locals});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         
                         llvm::FunctionType *err_clear_type = llvm::FunctionType::get(
                             llvm::Type::getVoidTy(*local_context), {}, false);
@@ -8925,13 +10533,13 @@ namespace justjit
                         llvm::Value *py_none_ptr_ret = llvm::ConstantInt::get(
                             i64_type, reinterpret_cast<uint64_t>(Py_None));
                         result = builder.CreateIntToPtr(py_none_ptr_ret, ptr_type);
-                        builder.CreateCall(py_incref_func, {result});
+                        builder.CreateCall(py_xincref_func, {result});
                         break;
                     }
                     default:
                     {
                         // Unknown intrinsic - raise error and transition to error state
-                        builder.CreateCall(py_decref_func, {arg});
+                        builder.CreateCall(py_xdecref_func, {arg});
                         llvm::FunctionType *py_err_set_str_type = llvm::FunctionType::get(
                             llvm::Type::getVoidTy(*local_context),
                             {ptr_type, ptr_type}, false);
@@ -8954,6 +10562,637 @@ namespace justjit
                     }
                 }
             }
+            // ========== BUILD_MAP ==========
+            else if (instr.opcode == op::BUILD_MAP)
+            {
+                // Build a dictionary from arg key-value pairs
+                int count = instr.arg;
+                llvm::Value *new_dict = builder.CreateCall(py_dict_new_func, {}, "new_dict");
+
+                std::vector<std::pair<llvm::Value *, llvm::Value *>> pairs;
+                for (int j = 0; j < count; ++j)
+                {
+                    if (stack.size() >= 2)
+                    {
+                        llvm::Value *value = stack.back();
+                        stack.pop_back();
+                        llvm::Value *key = stack.back();
+                        stack.pop_back();
+                        pairs.push_back({key, value});
+                    }
+                }
+
+                for (int j = count - 1; j >= 0; --j)
+                {
+                    llvm::Value *key = pairs[j].first;
+                    llvm::Value *value = pairs[j].second;
+                    builder.CreateCall(py_dict_setitem_func, {new_dict, key, value});
+                    builder.CreateCall(py_xdecref_func, {key});
+                    builder.CreateCall(py_xdecref_func, {value});
+                }
+
+                stack.push_back(new_dict);
+            }
+            // ========== BUILD_SET ==========
+            else if (instr.opcode == op::BUILD_SET)
+            {
+                int count = instr.arg;
+                llvm::Value *null_ptr = llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
+                llvm::Value *new_set = builder.CreateCall(py_set_new_func, {null_ptr}, "new_set");
+
+                std::vector<llvm::Value *> items;
+                for (int j = 0; j < count; ++j)
+                {
+                    if (!stack.empty())
+                    {
+                        items.push_back(stack.back());
+                        stack.pop_back();
+                    }
+                }
+
+                for (int j = count - 1; j >= 0; --j)
+                {
+                    llvm::Value *item = items[j];
+                    builder.CreateCall(py_set_add_func, {new_set, item});
+                    builder.CreateCall(py_xdecref_func, {item});
+                }
+
+                stack.push_back(new_set);
+            }
+            // ========== UNPACK_SEQUENCE ==========
+            else if (instr.opcode == op::UNPACK_SEQUENCE)
+            {
+                int count = instr.arg;
+                if (!stack.empty())
+                {
+                    llvm::Value *sequence = stack.back();
+                    stack.pop_back();
+
+                    std::vector<llvm::Value *> unpacked;
+                    for (int j = 0; j < count; ++j)
+                    {
+                        llvm::Value *idx = llvm::ConstantInt::get(i64_type, j);
+                        llvm::Value *item = builder.CreateCall(py_sequence_getitem_func, {sequence, idx}, "unpack_item");
+                        check_error_and_branch_gen(instr.offset, item, "unpack_seq");
+                        unpacked.push_back(item);
+                    }
+
+                    for (int j = count - 1; j >= 0; --j)
+                    {
+                        stack.push_back(unpacked[j]);
+                    }
+
+                    builder.CreateCall(py_xdecref_func, {sequence});
+                }
+            }
+            // ========== UNPACK_EX ==========
+            else if (instr.opcode == op::UNPACK_EX)
+            {
+                int count_before = instr.arg & 0xFF;
+                int count_after = (instr.arg >> 8) & 0xFF;
+
+                if (!stack.empty())
+                {
+                    llvm::Value *sequence = stack.back();
+                    stack.pop_back();
+
+                    llvm::Value *seq_len = builder.CreateCall(py_sequence_size_func, {sequence}, "seq_len");
+
+                    std::vector<llvm::Value *> before_items;
+                    for (int j = 0; j < count_before; ++j)
+                    {
+                        llvm::Value *idx = llvm::ConstantInt::get(i64_type, j);
+                        llvm::Value *item = builder.CreateCall(py_sequence_getitem_func, {sequence, idx}, "before_item");
+                        check_error_and_branch_gen(instr.offset, item, "unpack_ex_before");
+                        before_items.push_back(item);
+                    }
+
+                    std::vector<llvm::Value *> after_items;
+                    for (int j = count_after; j > 0; --j)
+                    {
+                        llvm::Value *neg_idx = llvm::ConstantInt::get(i64_type, -static_cast<int64_t>(j));
+                        llvm::Value *item = builder.CreateCall(py_sequence_getitem_func, {sequence, neg_idx}, "after_item");
+                        check_error_and_branch_gen(instr.offset, item, "unpack_ex_after");
+                        after_items.push_back(item);
+                    }
+
+                    llvm::Value *middle_start = llvm::ConstantInt::get(i64_type, count_before);
+                    llvm::Value *after_count_val = llvm::ConstantInt::get(i64_type, count_after);
+                    llvm::Value *middle_end = builder.CreateSub(seq_len, after_count_val, "middle_end");
+                    llvm::Value *middle_list = builder.CreateCall(py_sequence_getslice_func,
+                                                                  {sequence, middle_start, middle_end}, "middle_list");
+                    check_error_and_branch_gen(instr.offset, middle_list, "unpack_ex_middle");
+
+                    for (int j = static_cast<int>(after_items.size()) - 1; j >= 0; --j)
+                    {
+                        stack.push_back(after_items[j]);
+                    }
+                    stack.push_back(middle_list);
+                    for (int j = static_cast<int>(before_items.size()) - 1; j >= 0; --j)
+                    {
+                        stack.push_back(before_items[j]);
+                    }
+
+                    builder.CreateCall(py_xdecref_func, {sequence});
+                }
+            }
+            // ========== CALL_KW ==========
+            else if (instr.opcode == op::CALL_KW)
+            {
+                int num_args = instr.arg;
+                if (stack.size() >= static_cast<size_t>(num_args + 3))
+                {
+                    llvm::Value *kwnames = stack.back();
+                    stack.pop_back();
+
+                    size_t base = stack.size() - num_args - 2;
+                    llvm::Value *callable = stack[base];
+                    llvm::Value *self_or_null = stack[base + 1];
+
+                    std::vector<llvm::Value *> args;
+                    for (int ai = 0; ai < num_args; ++ai)
+                    {
+                        args.push_back(stack[base + 2 + ai]);
+                    }
+                    stack.erase(stack.begin() + base, stack.end());
+
+                    llvm::ArrayType *args_array_type = llvm::ArrayType::get(ptr_type, num_args);
+                    llvm::Value *args_array = builder.CreateAlloca(args_array_type, nullptr, "args_array");
+
+                    for (int ai = 0; ai < num_args; ++ai)
+                    {
+                        llvm::Value *indices[] = {
+                            llvm::ConstantInt::get(i64_type, 0),
+                            llvm::ConstantInt::get(i64_type, ai)};
+                        llvm::Value *elem_ptr = builder.CreateGEP(args_array_type, args_array, indices, "arg_ptr");
+                        builder.CreateStore(args[ai], elem_ptr);
+                    }
+
+                    llvm::Value *first_indices[] = {
+                        llvm::ConstantInt::get(i64_type, 0),
+                        llvm::ConstantInt::get(i64_type, 0)};
+                    llvm::Value *args_ptr = builder.CreateGEP(args_array_type, args_array, first_indices, "args_ptr");
+
+                    llvm::Value *nargs_val = llvm::ConstantInt::get(i64_type, num_args);
+                    llvm::Value *result = builder.CreateCall(jit_call_with_kwargs_func,
+                                                             {callable, args_ptr, nargs_val, kwnames}, "call_kw_result");
+
+                    builder.CreateCall(py_xdecref_func, {kwnames});
+                    builder.CreateCall(py_xdecref_func, {callable});
+
+                    llvm::Value *null_check = llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
+                    llvm::Value *has_self = builder.CreateICmpNE(self_or_null, null_check, "has_self");
+
+                    llvm::BasicBlock *decref_self_block = llvm::BasicBlock::Create(*local_context, "decref_self_kw_gen", func);
+                    llvm::BasicBlock *after_decref_self = llvm::BasicBlock::Create(*local_context, "after_decref_self_kw_gen", func);
+
+                    builder.CreateCondBr(has_self, decref_self_block, after_decref_self);
+
+                    builder.SetInsertPoint(decref_self_block);
+                    builder.CreateCall(py_xdecref_func, {self_or_null});
+                    builder.CreateBr(after_decref_self);
+
+                    builder.SetInsertPoint(after_decref_self);
+                    current_block = after_decref_self;
+
+                    check_error_and_branch_gen(instr.offset, result, "call_kw");
+                    stack.push_back(result);
+                }
+            }
+            // ========== CALL_FUNCTION_EX ==========
+            else if (instr.opcode == op::CALL_FUNCTION_EX)
+            {
+                bool has_kwargs = (instr.arg & 1) != 0;
+                size_t required = has_kwargs ? 4 : 3;
+
+                if (stack.size() >= required)
+                {
+                    llvm::Value *kwargs = nullptr;
+                    if (has_kwargs)
+                    {
+                        kwargs = stack.back();
+                        stack.pop_back();
+                    }
+
+                    llvm::Value *args_seq = stack.back();
+                    stack.pop_back();
+                    llvm::Value *self_or_null = stack.back();
+                    stack.pop_back();
+                    llvm::Value *callable = stack.back();
+                    stack.pop_back();
+
+                    llvm::Value *args_tuple = builder.CreateCall(py_sequence_tuple_func, {args_seq}, "args_as_tuple");
+                    builder.CreateCall(py_xdecref_func, {args_seq});
+
+                    llvm::Value *kwargs_arg = kwargs;
+                    if (!kwargs_arg)
+                    {
+                        kwargs_arg = llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
+                    }
+
+                    llvm::Value *result = builder.CreateCall(py_object_call_func,
+                                                             {callable, args_tuple, kwargs_arg}, "call_ex_result");
+
+                    builder.CreateCall(py_xdecref_func, {args_tuple});
+                    if (has_kwargs && kwargs)
+                    {
+                        builder.CreateCall(py_xdecref_func, {kwargs});
+                    }
+                    builder.CreateCall(py_xdecref_func, {callable});
+
+                    llvm::Value *null_check = llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
+                    llvm::Value *has_self = builder.CreateICmpNE(self_or_null, null_check, "has_self_ex");
+
+                    llvm::BasicBlock *decref_self_block = llvm::BasicBlock::Create(*local_context, "decref_self_ex_gen", func);
+                    llvm::BasicBlock *after_decref_self = llvm::BasicBlock::Create(*local_context, "after_decref_self_ex_gen", func);
+
+                    builder.CreateCondBr(has_self, decref_self_block, after_decref_self);
+
+                    builder.SetInsertPoint(decref_self_block);
+                    builder.CreateCall(py_xdecref_func, {self_or_null});
+                    builder.CreateBr(after_decref_self);
+
+                    builder.SetInsertPoint(after_decref_self);
+                    current_block = after_decref_self;
+
+                    check_error_and_branch_gen(instr.offset, result, "call_function_ex");
+                    stack.push_back(result);
+                }
+            }
+            // ========== STORE_GLOBAL ==========
+            else if (instr.opcode == op::STORE_GLOBAL)
+            {
+                int name_idx = instr.arg;
+                if (!stack.empty() && name_idx < static_cast<int>(name_objects.size()))
+                {
+                    llvm::Value *value = stack.back();
+                    stack.pop_back();
+
+                    llvm::Value *name_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(name_objects[name_idx]));
+                    llvm::Value *name_obj = builder.CreateIntToPtr(name_ptr, ptr_type, "name_obj");
+
+                    llvm::Value *globals_ptr_val = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(globals_dict_ptr));
+                    llvm::Value *globals_dict = builder.CreateIntToPtr(globals_ptr_val, ptr_type, "globals_dict");
+
+                    builder.CreateCall(py_dict_setitem_func, {globals_dict, name_obj, value});
+                    builder.CreateCall(py_xdecref_func, {value});
+                }
+            }
+            // ========== STORE_ATTR ==========
+            else if (instr.opcode == op::STORE_ATTR)
+            {
+                int name_idx = instr.arg;
+                if (stack.size() >= 2 && name_idx < static_cast<int>(name_objects.size()))
+                {
+                    llvm::Value *obj = stack.back();
+                    stack.pop_back();
+                    llvm::Value *value = stack.back();
+                    stack.pop_back();
+
+                    llvm::Value *attr_name_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(name_objects[name_idx]));
+                    llvm::Value *attr_name = builder.CreateIntToPtr(attr_name_ptr, ptr_type);
+
+                    builder.CreateCall(py_object_setattr_func, {obj, attr_name, value});
+                    builder.CreateCall(py_xdecref_func, {obj});
+                    builder.CreateCall(py_xdecref_func, {value});
+                }
+            }
+            // ========== LIST_APPEND ==========
+            else if (instr.opcode == op::LIST_APPEND)
+            {
+                emit_debug_trace(instr.offset, "LIST_APPEND (before)", stack.size());
+                
+                if (!stack.empty())
+                {
+                    llvm::Value *item = stack.back();
+                    stack.pop_back();
+
+                    int list_index = instr.arg;
+                    if (list_index > 0 && static_cast<size_t>(list_index) <= stack.size())
+                    {
+                        llvm::Value *list = stack[stack.size() - list_index];
+                        
+                        // Debug: trace the list before append
+                        emit_debug_trace(instr.offset, "LIST_APPEND list", stack.size(), list);
+                        emit_debug_trace(instr.offset, "LIST_APPEND item", stack.size(), item);
+                        
+                        builder.CreateCall(py_list_append_func, {list, item});
+                        builder.CreateCall(py_xdecref_func, {item});
+                        
+                        emit_debug_trace(instr.offset, "LIST_APPEND (after)", stack.size());
+                    }
+                }
+            }
+            // ========== SET_ADD ==========
+            else if (instr.opcode == op::SET_ADD)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *item = stack.back();
+                    stack.pop_back();
+
+                    int set_index = instr.arg;
+                    if (set_index > 0 && static_cast<size_t>(set_index) <= stack.size())
+                    {
+                        llvm::Value *set = stack[stack.size() - set_index];
+                        builder.CreateCall(py_set_add_func, {set, item});
+                        builder.CreateCall(py_xdecref_func, {item});
+                    }
+                }
+            }
+            // ========== MAP_ADD ==========
+            else if (instr.opcode == op::MAP_ADD)
+            {
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *value = stack.back();
+                    stack.pop_back();
+                    llvm::Value *key = stack.back();
+                    stack.pop_back();
+
+                    int map_index = instr.arg;
+                    if (map_index > 0 && static_cast<size_t>(map_index) <= stack.size())
+                    {
+                        llvm::Value *dict = stack[stack.size() - map_index];
+                        builder.CreateCall(py_dict_setitem_func, {dict, key, value});
+                        builder.CreateCall(py_xdecref_func, {key});
+                        builder.CreateCall(py_xdecref_func, {value});
+                    }
+                }
+            }
+            // ========== DELETE_SUBSCR ==========
+            else if (instr.opcode == op::DELETE_SUBSCR)
+            {
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *key = stack.back();
+                    stack.pop_back();
+                    llvm::Value *container = stack.back();
+                    stack.pop_back();
+
+                    builder.CreateCall(py_object_delitem_func, {container, key});
+                    builder.CreateCall(py_xdecref_func, {key});
+                    builder.CreateCall(py_xdecref_func, {container});
+                }
+            }
+            // ========== COPY_FREE_VARS ==========
+            else if (instr.opcode == op::COPY_FREE_VARS)
+            {
+                int num_free_vars = instr.arg;
+                for (int j = 0; j < num_free_vars && j < static_cast<int>(closure_cells.size()); ++j)
+                {
+                    if (closure_cells[j] != nullptr)
+                    {
+                        int slot = nlocals + j;
+                        llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, slot);
+                        llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
+                        llvm::Value *cell_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(closure_cells[j]));
+                        llvm::Value *cell_obj = builder.CreateIntToPtr(cell_ptr, ptr_type);
+                        builder.CreateStore(cell_obj, slot_ptr);
+                    }
+                }
+            }
+            // ========== LOAD_DEREF ==========
+            else if (instr.opcode == op::LOAD_DEREF)
+            {
+                int slot = instr.arg;
+                llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, slot);
+                llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
+                llvm::Value *cell = builder.CreateLoad(ptr_type, slot_ptr, "load_cell");
+                llvm::Value *contents = builder.CreateCall(py_cell_get_func, {cell}, "cell_contents");
+                check_error_and_branch_gen(instr.offset, contents, "load_deref");
+                stack.push_back(contents);
+            }
+            // ========== STORE_DEREF ==========
+            else if (instr.opcode == op::STORE_DEREF)
+            {
+                int slot = instr.arg;
+                if (!stack.empty())
+                {
+                    llvm::Value *value = stack.back();
+                    stack.pop_back();
+
+                    llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, slot);
+                    llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
+                    llvm::Value *cell = builder.CreateLoad(ptr_type, slot_ptr, "store_cell");
+                    builder.CreateCall(py_cell_set_func, {cell, value});
+                }
+            }
+            // ========== MAKE_CELL ==========
+            else if (instr.opcode == op::MAKE_CELL)
+            {
+                int slot = instr.arg;
+                
+                // Get or create PyCell_New function
+                llvm::FunctionType *py_cell_new_type = llvm::FunctionType::get(ptr_type, {ptr_type}, false);
+                llvm::FunctionCallee py_cell_new_func_local = module->getOrInsertFunction("PyCell_New", py_cell_new_type);
+                
+                // Load current value from slot (may be parameter)
+                llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, slot);
+                llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
+                llvm::Value *initial_value = builder.CreateLoad(ptr_type, slot_ptr, "initial_cell_value");
+                
+                // Handle NULL initial value
+                llvm::Value *is_null = builder.CreateICmpEQ(initial_value,
+                    llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)));
+                llvm::Value *cell_value = builder.CreateSelect(is_null,
+                    llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)),
+                    initial_value);
+                
+                llvm::Value *new_cell = builder.CreateCall(py_cell_new_func_local, {cell_value}, "new_cell");
+                builder.CreateStore(new_cell, slot_ptr);
+            }
+            // ========== LOAD_CLOSURE ==========
+            else if (instr.opcode == op::LOAD_CLOSURE)
+            {
+                int slot = instr.arg;
+                llvm::Value *slot_idx = llvm::ConstantInt::get(i64_type, slot);
+                llvm::Value *slot_ptr = builder.CreateGEP(ptr_type, locals_array, slot_idx);
+                llvm::Value *cell = builder.CreateLoad(ptr_type, slot_ptr, "load_closure");
+                builder.CreateCall(py_xincref_func, {cell});
+                stack.push_back(cell);
+            }
+            // ========== IMPORT_NAME ==========
+            else if (instr.opcode == op::IMPORT_NAME)
+            {
+                int name_idx = instr.arg;
+                if (stack.size() >= 2 && name_idx < static_cast<int>(name_objects.size()))
+                {
+                    llvm::Value *fromlist = stack.back();
+                    stack.pop_back();
+                    llvm::Value *level_obj = stack.back();
+                    stack.pop_back();
+
+                    llvm::Value *name_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(name_objects[name_idx]));
+                    llvm::Value *name = builder.CreateIntToPtr(name_ptr, ptr_type, "module_name");
+
+                    llvm::Value *globals_ptr_val = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(globals_dict_ptr));
+                    llvm::Value *globals = builder.CreateIntToPtr(globals_ptr_val, ptr_type, "globals");
+
+                    llvm::Value *locals_null = llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0));
+
+                    llvm::Value *level_int = builder.CreateCall(py_long_aslong_func, {level_obj});
+                    llvm::Value *level_trunc = builder.CreateTrunc(level_int, i32_type);
+                    builder.CreateCall(py_xdecref_func, {level_obj});
+
+                    llvm::Value *module = builder.CreateCall(py_import_importmodule_func,
+                        {name, globals, locals_null, fromlist, level_trunc}, "imported_module");
+
+                    builder.CreateCall(py_xdecref_func, {fromlist});
+                    check_error_and_branch_gen(instr.offset, module, "import_name");
+                    stack.push_back(module);
+                }
+            }
+            // ========== IMPORT_FROM ==========
+            else if (instr.opcode == op::IMPORT_FROM)
+            {
+                int name_idx = instr.arg;
+                if (!stack.empty() && name_idx < static_cast<int>(name_objects.size()))
+                {
+                    llvm::Value *module = stack.back();
+
+                    llvm::Value *attr_name_ptr = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(name_objects[name_idx]));
+                    llvm::Value *attr_name = builder.CreateIntToPtr(attr_name_ptr, ptr_type, "attr_name");
+
+                    llvm::Value *attr = builder.CreateCall(py_object_getattr_func, {module, attr_name}, "imported_attr");
+                    check_error_and_branch_gen(instr.offset, attr, "import_from");
+                    stack.push_back(attr);
+                }
+            }
+            // ========== MAKE_FUNCTION ==========
+            else if (instr.opcode == op::MAKE_FUNCTION)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *code_obj = stack.back();
+                    stack.pop_back();
+
+                    llvm::Value *globals_ptr_val = llvm::ConstantInt::get(i64_type, reinterpret_cast<uint64_t>(globals_dict_ptr));
+                    llvm::Value *globals = builder.CreateIntToPtr(globals_ptr_val, ptr_type);
+
+                    llvm::Value *func_obj = builder.CreateCall(py_function_new_func, {code_obj, globals});
+                    builder.CreateCall(py_xdecref_func, {code_obj});
+                    check_error_and_branch_gen(instr.offset, func_obj, "make_function");
+                    stack.push_back(func_obj);
+                }
+            }
+            // ========== SET_FUNCTION_ATTRIBUTE ==========
+            else if (instr.opcode == op::SET_FUNCTION_ATTRIBUTE)
+            {
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *py_func = stack.back();
+                    stack.pop_back();
+                    llvm::Value *value = stack.back();
+                    stack.pop_back();
+
+                    int flag = instr.arg;
+                    llvm::Value *result = nullptr;
+
+                    if (flag == 0x01)
+                    {
+                        result = builder.CreateCall(py_function_set_defaults_func, {py_func, value});
+                    }
+                    else if (flag == 0x02)
+                    {
+                        result = builder.CreateCall(py_function_set_kwdefaults_func, {py_func, value});
+                    }
+                    else if (flag == 0x04)
+                    {
+                        result = builder.CreateCall(py_function_set_annotations_func, {py_func, value});
+                    }
+                    else if (flag == 0x08)
+                    {
+                        result = builder.CreateCall(py_function_set_closure_func, {py_func, value});
+                    }
+
+                    if (result)
+                    {
+                        llvm::Value *is_error = builder.CreateICmpSLT(result, llvm::ConstantInt::get(i32_type, 0));
+                        llvm::BasicBlock *error_bb = llvm::BasicBlock::Create(*local_context, "set_func_attr_error_gen", func);
+                        llvm::BasicBlock *continue_bb = llvm::BasicBlock::Create(*local_context, "set_func_attr_continue_gen", func);
+                        builder.CreateCondBr(is_error, error_bb, continue_bb);
+
+                        builder.SetInsertPoint(error_bb);
+                        builder.CreateCall(py_xdecref_func, {py_func});
+                        builder.CreateStore(llvm::ConstantInt::get(i32_type, -2), state_ptr);
+                        builder.CreateRet(llvm::ConstantPointerNull::get(llvm::PointerType::get(*local_context, 0)));
+
+                        builder.SetInsertPoint(continue_bb);
+                        current_block = continue_bb;
+                    }
+
+                    stack.push_back(py_func);
+                }
+            }
+            // ========== LIST_EXTEND ==========
+            else if (instr.opcode == op::LIST_EXTEND)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *iterable = stack.back();
+                    stack.pop_back();
+
+                    int list_index = instr.arg;
+                    if (list_index > 0 && static_cast<size_t>(list_index) <= stack.size())
+                    {
+                        llvm::Value *list = stack[stack.size() - list_index];
+                        builder.CreateCall(py_list_extend_func, {list, iterable});
+                        builder.CreateCall(py_xdecref_func, {iterable});
+                    }
+                }
+            }
+            // ========== SET_UPDATE ==========
+            else if (instr.opcode == op::SET_UPDATE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *iterable = stack.back();
+                    stack.pop_back();
+
+                    int set_index = instr.arg;
+                    if (set_index > 0 && static_cast<size_t>(set_index) <= stack.size())
+                    {
+                        llvm::Value *set = stack[stack.size() - set_index];
+                        builder.CreateCall(py_set_update_func, {set, iterable});
+                        builder.CreateCall(py_xdecref_func, {iterable});
+                    }
+                }
+            }
+            // ========== DICT_UPDATE ==========
+            else if (instr.opcode == op::DICT_UPDATE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *update_dict = stack.back();
+                    stack.pop_back();
+
+                    int dict_index = instr.arg;
+                    if (dict_index > 0 && static_cast<size_t>(dict_index) <= stack.size())
+                    {
+                        llvm::Value *dict = stack[stack.size() - dict_index];
+                        builder.CreateCall(py_dict_update_func, {dict, update_dict});
+                        builder.CreateCall(py_xdecref_func, {update_dict});
+                    }
+                }
+            }
+            // ========== DICT_MERGE ==========
+            else if (instr.opcode == op::DICT_MERGE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *update_dict = stack.back();
+                    stack.pop_back();
+
+                    int dict_index = instr.arg;
+                    if (dict_index > 0 && static_cast<size_t>(dict_index) <= stack.size())
+                    {
+                        llvm::Value *dict = stack[stack.size() - dict_index];
+                        builder.CreateCall(py_dict_merge_func, {dict, update_dict, llvm::ConstantInt::get(i32_type, 1)});
+                        builder.CreateCall(py_xdecref_func, {update_dict});
+                    }
+                }
+            }
             // Unsupported opcodes - should have been filtered by _is_simple_generator
         }
 
@@ -8968,8 +11207,9 @@ namespace justjit
         llvm::raw_string_ostream verify_stream(verify_err);
         if (llvm::verifyFunction(*func, &verify_stream))
         {
-            llvm::errs() << "Generator step function verification failed: " << verify_err << "\n";
-            // Don't return false - try to proceed anyway for debugging
+            llvm::errs() << "=== GENERATOR VERIFICATION FAILED ===\n" << verify_err << "\n=== END ERROR ===\n";
+            llvm::errs().flush();
+            return false;  // Return false on verification failure
         }
 
         optimize_module(*module, func);
@@ -9001,7 +11241,14 @@ namespace justjit
         GeneratorStepFunc step_func = reinterpret_cast<GeneratorStepFunc>(step_addr);
         PyObject *py_name = func_name.ptr();
         PyObject *py_qualname = func_qualname.ptr();
-        Py_ssize_t num_locals = static_cast<Py_ssize_t>(total_locals);
+        
+        // Use the actual computed total_locals from compilation if available
+        int actual_total_locals = total_locals;
+        auto it = generator_total_locals.find(name);
+        if (it != generator_total_locals.end()) {
+            actual_total_locals = it->second;
+        }
+        Py_ssize_t num_locals = static_cast<Py_ssize_t>(actual_total_locals);
 
         // Create a Python function that returns a new generator each time it's called
         // We'll use a lambda captured in a PyCFunction

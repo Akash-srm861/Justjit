@@ -13,6 +13,7 @@
 #include <llvm/IR/IRBuilder.h>
 #include <memory>
 #include <string>
+#include <vector>
 #include <unordered_set>
 
 namespace nb = nanobind;
@@ -111,6 +112,34 @@ namespace justjit
         bool lasti;     // Whether to push last instruction offset
     };
 
+    // =========================================================================
+    // Control Flow Graph (CFG) Data Structures for PHI Node Support
+    // =========================================================================
+    // These structures enable proper SSA form generation for complex control flow
+    // patterns like pattern matching (match/case), loops, and exception handling.
+    // =========================================================================
+
+    // Represents a basic block in the CFG
+    struct BasicBlockInfo
+    {
+        int start_offset;                      // Bytecode offset where block starts
+        int end_offset;                        // Bytecode offset where block ends (exclusive)
+        std::vector<int> predecessors;         // Offsets of predecessor blocks
+        std::vector<int> successors;           // Offsets of successor blocks
+        int stack_depth_at_entry;              // Expected stack depth when entering this block
+        bool is_exception_handler;             // True if this is an exception handler block
+        bool needs_phi_nodes;                  // True if multiple predecessors with different stacks
+        llvm::BasicBlock* llvm_block;          // The LLVM BasicBlock for this CFG block
+    };
+
+    // Stack state at a specific point in control flow
+    struct CFGStackState
+    {
+        std::vector<llvm::Value*> stack;       // Values on the stack
+        llvm::BasicBlock* from_block;          // Which LLVM block this state came from
+        int from_offset;                       // Bytecode offset this state is from
+    };
+
     class JITCore
     {
     public:
@@ -151,6 +180,7 @@ namespace justjit
         llvm::Function *py_incref_func = nullptr;
         llvm::Function *py_xincref_func = nullptr; // NULL-safe Py_XINCREF
         llvm::Function *py_decref_func = nullptr;
+        llvm::Function *py_xdecref_func = nullptr; // NULL-safe Py_XDECREF
         llvm::Function *py_long_fromlong_func = nullptr;
         llvm::Function *py_long_fromlonglong_func = nullptr; // For 64-bit int conversion (Windows fix)
         llvm::Function *py_tuple_new_func = nullptr;
@@ -241,6 +271,8 @@ namespace justjit
 
         // JIT helper functions
         llvm::Function *jit_call_with_kwargs_func = nullptr; // PyObject* jit_call_with_kwargs(...) for CALL_KW
+        llvm::Function *jit_debug_trace_func = nullptr;      // void jit_debug_trace(...) for debugging
+        llvm::Function *jit_debug_stack_func = nullptr;      // void jit_debug_stack(...) for debugging
 
     private:
         std::unique_ptr<llvm::orc::LLJIT> jit;
@@ -259,6 +291,9 @@ namespace justjit
 
         // Cache of already-compiled function names to prevent duplicate symbol errors
         std::unordered_set<std::string> compiled_functions;
+
+        // Cache of generator metadata (actual total_locals after simulation)
+        std::unordered_map<std::string, int> generator_total_locals;
 
         // Closure cells storage (for COPY_FREE_VARS / LOAD_DEREF)
         std::vector<PyObject *> stored_closure_cells;

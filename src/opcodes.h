@@ -43,6 +43,8 @@ namespace justjit
         constexpr int LOAD_ATTR = 82;
         constexpr int LOAD_DEREF = 84;
         constexpr int LOAD_LOCALS = 25;
+        constexpr int LOAD_FROM_DICT_OR_DEREF = 89;
+        constexpr int LOAD_FROM_DICT_OR_GLOBALS = 90;
 
         // Store operations
         constexpr int STORE_FAST = 110;
