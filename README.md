@@ -1,4 +1,4 @@
-<![CDATA[<div align="center">
+<div align="center">
   <img src="assets/logo.png" alt="JustJIT Logo" width="200"/>
 </div>
 
@@ -7,8 +7,8 @@
 A high-performance Just-In-Time compiler for Python that leverages LLVM's ORC JIT infrastructure to compile Python bytecode to native machine code at runtime.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
-[![LLVM 22](https://img.shields.io/badge/LLVM-22.0.0-orange.svg)](https://llvm.org/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![LLVM 18](https://img.shields.io/badge/LLVM-18.1.8-orange.svg)](https://llvm.org/)
 
 ---
 
@@ -48,7 +48,7 @@ JustJIT transforms Python functions into optimized native machine code using LLV
 ## Features
 
 ### Core Features
-- **Python 3.13+ Bytecode Support**: Full support for Python 3.13 bytecode format
+- **Python 3.10+ Bytecode Support**: Full support for Python 3.10-3.13 bytecode formats
 - **LLVM ORC JIT v2**: Modern JIT infrastructure with lazy compilation support
 - **Multiple Compilation Modes**:
   - `object` mode: Full Python object semantics
@@ -425,9 +425,9 @@ Using Python implementation (no performance impact for generators).
 
 | Requirement | Version |
 |-------------|---------|
-| Python | 3.13+ |
+| Python | 3.10+ |
 | CMake | 3.20+ |
-| LLVM | 22.0.0+ |
+| LLVM | 18.1.8+ |
 | C++ Compiler | C++17 support |
 | nanobind | 2.0.0+ |
 
@@ -529,7 +529,7 @@ Contributions are welcome! Please ensure:
 1. **Code Style**: Follow existing patterns in the codebase
 2. **Testing**: Test with various Python code patterns
 3. **Documentation**: Update docs for new features
-4. **Compatibility**: Maintain Python 3.13+ and cross-platform support
+4. **Compatibility**: Maintain Python 3.10+ and cross-platform support
 
 ### Development Workflow
 
