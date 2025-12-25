@@ -20,143 +20,94 @@ execute_process(
 find_package(nanobind CONFIG REQUIRED)
 
 # LLVM configuration
-# Users should set LLVM_DIR to their LLVM installation
-# Example: cmake -DLLVM_DIR=/path/to/llvm/build/lib/cmake/llvm ..
-
-# Force static LLVM linking for standalone wheels
-set(LLVM_LINK_LLVM_DYLIB OFF CACHE BOOL "Link against static LLVM libraries" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
-
+# conda-forge llvmdev provides DYNAMIC libraries (libLLVM.so / LLVM.dll)
+# We link dynamically and bundle the shared lib into the wheel
 find_package(LLVM REQUIRED CONFIG)
 
-# LLVM paths from find_package
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-message(STATUS "LLVM library dir: ${LLVM_LIBRARY_DIRS}")
+message(STATUS "LLVM library dir: ${LLVM_LIBRARY_DIR}")
+message(STATUS "LLVM definitions: ${LLVM_DEFINITIONS}")
 
+# Include LLVM headers
 include_directories(${LLVM_INCLUDE_DIRS})
-link_directories(${LLVM_LIBRARY_DIRS})
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
+add_definitions(${LLVM_DEFINITIONS_LIST})
 
-# zlib (optional, needed on some platforms)
-find_package(ZLIB)
+# Additional Windows-specific definitions
+if(WIN32)
+    add_definitions(
+        -D_CRT_SECURE_NO_DEPRECATE
+        -D_CRT_SECURE_NO_WARNINGS
+        -D_SCL_SECURE_NO_DEPRECATE
+        -D_SCL_SECURE_NO_WARNINGS
+    )
+endif()
 
-# LLVM definitions
-add_definitions(
-    -D_CRT_SECURE_NO_DEPRECATE
-    -D_CRT_SECURE_NO_WARNINGS  
-    -D_CRT_NONSTDC_NO_DEPRECATE
-    -D_CRT_NONSTDC_NO_WARNINGS
-    -D_SCL_SECURE_NO_DEPRECATE
-    -D_SCL_SECURE_NO_WARNINGS
-    -DUNICODE
-    -D_UNICODE
-    -D__STDC_CONSTANT_MACROS
-    -D__STDC_FORMAT_MACROS
-    -D__STDC_LIMIT_MACROS
-)
+# Find zlib (required by LLVM)
+find_package(ZLIB REQUIRED)
 
-# Create extension module
+# Create the Python extension module
 nanobind_add_module(_core NB_STATIC NOMINSIZE
     src/jit_core.cpp
     src/bindings.cpp
 )
 
-# Use LLVM's llvm_map_components_to_libnames to get the right libraries
-# This handles version differences and platform specifics automatically
-llvm_map_components_to_libnames(LLVM_LIBS
-    Core
-    Support
-    ExecutionEngine
-    OrcJIT
-    MCJIT
-    RuntimeDyld
-    native
-    Passes
-    IRReader
-    AsmParser
-    Linker
-    ipo
-    Instrumentation
-    ScalarOpts
-    InstCombine
-    TransformUtils
-    Analysis
-    Object
-    MC
-    MCParser
-    MCDisassembler
-    BitReader
-    BitWriter
-    Target
-    CodeGen
-    SelectionDAG
-    AsmPrinter
-    GlobalISel
-    Demangle
-    BinaryFormat
-    Remarks
-    BitstreamReader
-    ProfileData
-    AggressiveInstCombine
-    Vectorize
-    CFGuard
-)
-
-message(STATUS "LLVM libraries: ${LLVM_LIBS}")
-
-# Filter out any DIA SDK related libraries before linking (Windows-specific)
+# Link against the single shared LLVM library
+# conda-forge provides libLLVM-XX.so (Linux), libLLVM.dylib (macOS), LLVM-C.dll (Windows)
 if(WIN32)
-    list(FILTER LLVM_LIBS EXCLUDE REGEX "diaguids")
-    list(FILTER LLVM_LIBS EXCLUDE REGEX "DebugInfoPDB")
-    message(STATUS "LLVM libraries after filtering (Windows): ${LLVM_LIBS}")
+    # Windows: Link against LLVM-C.lib (import library for LLVM-C.dll)
+    find_library(LLVM_SHARED_LIB NAMES LLVM-C LLVM PATHS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
+    if(LLVM_SHARED_LIB)
+        message(STATUS "Found LLVM shared library: ${LLVM_SHARED_LIB}")
+        target_link_libraries(_core PRIVATE ${LLVM_SHARED_LIB})
+    else()
+        # Fallback: use component libraries
+        llvm_map_components_to_libnames(LLVM_LIBS Core Support OrcJIT ExecutionEngine RuntimeDyld native Passes TransformUtils Analysis Target Object MC IRReader)
+        target_link_libraries(_core PRIVATE ${LLVM_LIBS})
+    endif()
+else()
+    # Linux/macOS: Link against libLLVM.so or libLLVM.dylib
+    find_library(LLVM_SHARED_LIB NAMES LLVM LLVM-${LLVM_VERSION_MAJOR} PATHS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
+    if(LLVM_SHARED_LIB)
+        message(STATUS "Found LLVM shared library: ${LLVM_SHARED_LIB}")
+        target_link_libraries(_core PRIVATE ${LLVM_SHARED_LIB})
+    else()
+        # Fallback: use component libraries
+        llvm_map_components_to_libnames(LLVM_LIBS Core Support OrcJIT ExecutionEngine RuntimeDyld native Passes TransformUtils Analysis Target Object MC IRReader)
+        target_link_libraries(_core PRIVATE ${LLVM_LIBS})
+    endif()
 endif()
 
-# Link LLVM libraries
-target_link_libraries(_core PRIVATE ${LLVM_LIBS})
+# Link zlib
+target_link_libraries(_core PRIVATE ZLIB::ZLIB)
 
-# Add zlib if found
-if(ZLIB_FOUND)
-    target_link_libraries(_core PRIVATE ${ZLIB_LIBRARIES})
-endif()
-
-# Platform-specific libraries
+# Platform-specific system libraries
 if(WIN32)
-    # Disable debug symbols to avoid DIA SDK dependency
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DEBUG:NONE")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /DEBUG:NONE")
-    set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} /DEBUG:NONE")
-    
     target_link_libraries(_core PRIVATE
+        version
         psapi
         shell32
         ole32
         uuid
         advapi32
-        ws2_32
     )
 elseif(UNIX AND NOT APPLE)
-    # Linux system libraries needed by LLVM
     find_package(Threads REQUIRED)
     target_link_libraries(_core PRIVATE
         Threads::Threads
         ${CMAKE_DL_LIBS}
-        rt
         m
     )
-    # tinfo/ncurses is optional - some LLVM builds need it, some don't
-    find_library(TINFO_LIBRARY NAMES tinfo ncurses ncursesw)
-    if(TINFO_LIBRARY)
-        target_link_libraries(_core PRIVATE ${TINFO_LIBRARY})
-    endif()
 elseif(APPLE)
-    # macOS system libraries
     find_library(COREFOUNDATION_LIBRARY CoreFoundation)
     target_link_libraries(_core PRIVATE ${COREFOUNDATION_LIBRARY})
 endif()
 
-set_target_properties(_core PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/justjit"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/justjit"
-)
-
+# Install the Python extension
 install(TARGETS _core LIBRARY DESTINATION justjit)
+
+# The LLVM shared library will be bundled by wheel repair tools:
+# - auditwheel (Linux) - bundles .so files
+# - delocate (macOS) - bundles .dylib files  
+# - delvewheel (Windows) - bundles .dll files

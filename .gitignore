@@ -1,34 +1,27 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
+# Build artifacts
 build/
 dist/
-wheels/
-*.egg-info
+wheelhouse/
+*.egg-info/
+*.egg
+*.whl
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Virtual environments
 .venv/
 venv/
+ENV/
 env/
-test_venv/
-# CMake
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
-*.cmake
-!CMakeLists.txt
-
-# Build artifacts
-*.so
-*.pyd
-*.dll
-*.dylib
-*.a
-*.lib
-*.exp
-*.obj
-*.o
+.conda/
 
 # IDE
 .vscode/
@@ -36,49 +29,63 @@ Makefile
 *.swp
 *.swo
 *~
+.project
+.pydevproject
+.settings/
 
-# OS
+# OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-# Generated bindings
-src/justjit/_core.*
+# C/C++ build
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.dylib
+*.exp
+*.ilk
+*.pdb
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
 
-# Test outputs
-*.pyc
-test_*.py
-check_*.py
-debug_*.py
-verify_*.py
-analyze_*.py
-decode_*.py
-get_*.py
-map_*.py
-trace_*.py
-quick_test.py
-test.py
-explian.py
+# LLVM
+*.bc
 
-# Debug/temp files
-jit_debug.txt
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
 *.log
+logs/
 
-# Scripts (local only)
-copy_llvm_dlls.py
-run_valgrind.sh
-run_valgrind_*.sh
-publish_to_pypi.ps1
+# Testing
+.hypothesis/
 
-# Presentation files
-presentation/
-presentation-web/
-
-# Package lock
-package-lock.json
-
-# Old documentation (replaced by README)
-IMPLEMENTATION_PLAN.md
-OPCODES.md
-
-#uv-files
+# uv
+.uv/
 uv.lock
+
+# Local config
+.env
+.env.local
+*.local
+
+
+

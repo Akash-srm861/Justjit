@@ -4,43 +4,43 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "justjit"
-version = "0.1.2"
-description = "Fast Python JIT compiler using LLVM ORC"
+version = "0.1.3"
+description = "Fast Python JIT compiler using LLVM ORC - lowers Python bytecode to native machine code"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [
     { name = "JustJIT Contributors" },
 ]
+keywords = ["jit", "compiler", "llvm", "python", "optimization", "performance"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: C++",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Code Generators",
 ]
-dependencies = [
-    "numpy>=1.20.0",
-]
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/magi8101/justjit"
 Repository = "https://github.com/magi8101/justjit"
+Documentation = "https://github.com/magi8101/justjit#readme"
 
 [tool.scikit-build]
 minimum-version = "0.4"
 build-dir = "build/{wheel_tag}"
-# LLVM_DIR and CMAKE_PREFIX_PATH are set via environment variables in CI
 
 [tool.cibuildwheel]
 build-verbosity = 1
-skip = ["cp37-*", "pp37-*"]
+skip = ["cp37-*", "cp38-*", "cp39-*", "pp*"]
 archs = ["auto64"]
 
 [tool.cibuildwheel.macos.environment]
-MACOSX_DEPLOYMENT_TARGET = "10.14"
+MACOSX_DEPLOYMENT_TARGET = "11.0"
