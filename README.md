@@ -1,7 +1,7 @@
 # justjit
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/magi8101/justjit/wheels.yml?branch=main&style=flat-square)](https://github.com/magi8101/justjit/actions)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![LLVM 20](https://img.shields.io/badge/LLVM-20-orange?style=flat-square&logo=llvm)](https://llvm.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green?style=flat-square)](LICENSE)
 

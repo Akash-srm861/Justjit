@@ -35,36 +35,39 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12'
+        python-version: '3.13'
 
     # ===== Linux: Use manylinux_2_28 with system LLVM =====
     - name: Build wheels (Linux)
       if: runner.os == 'Linux'
       uses: pypa/cibuildwheel@v2.21
       env:
-        CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+        # Only build for Python 3.13
+        CIBW_BUILD: "cp313-*"
         CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
         CIBW_ARCHS: ${{ matrix.arch }}
         CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
-        # Install LLVM and find library paths
         CIBW_BEFORE_ALL_LINUX: |
           set -ex
           dnf install -y epel-release || true
           dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || true
           dnf install -y llvm-devel clang-devel zlib-devel libxml2-devel cmake ninja-build || true
-          # Find LLVM shared library location
-          LLVM_LIB_DIR=$(llvm-config --libdir 2>/dev/null || echo "/usr/lib64")
-          echo "LLVM library directory: $LLVM_LIB_DIR"
-          ls -la "$LLVM_LIB_DIR"/libLLVM*.so* 2>/dev/null | head -5 || true
+          # Verify LLVM
+          llvm-config --version || echo "llvm-config not found"
+          llvm-config --libdir || true
+          ls -la $(llvm-config --libdir 2>/dev/null || echo /usr/lib64)/libLLVM*.so* 2>/dev/null | head -5 || true
         CIBW_ENVIRONMENT_LINUX: >-
           LLVM_DIR=/usr/lib64/cmake/llvm
           CMAKE_PREFIX_PATH=/usr
         CIBW_BEFORE_BUILD: "pip install nanobind scikit-build-core cmake ninja"
-        # auditwheel needs LD_LIBRARY_PATH to find LLVM shared lib during repair
-        # It will copy libLLVM.so into the wheel's .libs directory
         CIBW_REPAIR_WHEEL_COMMAND_LINUX: |
           export LD_LIBRARY_PATH=/usr/lib64:/usr/lib:$LD_LIBRARY_PATH
+          echo "=== Checking wheel before repair ==="
+          auditwheel show {wheel} || true
+          echo "=== Repairing wheel ==="
           auditwheel repair --plat manylinux_2_28_x86_64 -w {dest_dir} {wheel} || cp {wheel} {dest_dir}/
+          echo "=== Verifying repaired wheel ==="
+          auditwheel show {dest_dir}/*.whl || true
         CIBW_TEST_COMMAND: "python -c \"import justjit; print('justjit imported successfully')\""
         CIBW_BUILD_VERBOSITY: 3
 
@@ -87,7 +90,7 @@ jobs:
         echo "LLVM_DIR=$CONDA_PREFIX/lib/cmake/llvm" >> $GITHUB_ENV
         echo "CMAKE_PREFIX_PATH=$CONDA_PREFIX" >> $GITHUB_ENV
         echo "LLVM_LIB_DIR=$CONDA_PREFIX/lib" >> $GITHUB_ENV
-        # Verify LLVM installation
+        # Verify LLVM
         $CONDA_PREFIX/bin/llvm-config --version
         ls -la "$CONDA_PREFIX/lib"/libLLVM*.dylib 2>/dev/null | head -5 || true
 
@@ -95,21 +98,22 @@ jobs:
       if: runner.os == 'macOS'
       uses: pypa/cibuildwheel@v2.21
       env:
-        CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+        # Only build for Python 3.13
+        CIBW_BUILD: "cp313-*"
         CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
         CIBW_ARCHS: ${{ matrix.arch }}
         CIBW_ENVIRONMENT: >
-          LLVM_DIR=${{ env.LLVM_DIR }}
-          CMAKE_PREFIX_PATH=${{ env.CMAKE_PREFIX_PATH }}
+          LLVM_DIR=$LLVM_DIR
+          CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH
           MACOSX_DEPLOYMENT_TARGET=11.0
         CIBW_BEFORE_BUILD: "pip install nanobind scikit-build-core cmake ninja delocate"
-        # delocate copies dylibs into .dylibs dir and patches load commands
-        # Use delocate-listdeps first to verify, then repair
         CIBW_REPAIR_WHEEL_COMMAND_MACOS: |
-          echo "Listing wheel dependencies..."
+          echo "=== Checking wheel dependencies ==="
           delocate-listdeps {wheel} || true
-          echo "Repairing wheel..."
+          echo "=== Repairing wheel ==="
           delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v {wheel} || cp {wheel} {dest_dir}/
+          echo "=== Verifying repaired wheel ==="
+          delocate-listdeps {dest_dir}/*.whl || true
         CIBW_TEST_COMMAND: "python -c \"import justjit; print('justjit imported successfully')\""
         CIBW_BUILD_VERBOSITY: 3
 
@@ -135,14 +139,13 @@ jobs:
       shell: pwsh
       run: |
         conda install -y llvmdev zlib libxml2
-        # Set paths with forward slashes for CMake
         $llvmDir = "$env:CONDA_PREFIX/Library/lib/cmake/llvm" -replace '\\', '/'
         $prefixPath = "$env:CONDA_PREFIX/Library" -replace '\\', '/'
         $llvmBinDir = "$env:CONDA_PREFIX\Library\bin"
         echo "LLVM_DIR=$llvmDir" >> $env:GITHUB_ENV
         echo "CMAKE_PREFIX_PATH=$prefixPath" >> $env:GITHUB_ENV
         echo "LLVM_BIN_DIR=$llvmBinDir" >> $env:GITHUB_ENV
-        # List LLVM DLLs that will be bundled
+        # Verify LLVM DLLs
         Write-Host "LLVM DLLs found:"
         Get-ChildItem "$llvmBinDir\*.dll" | Where-Object { $_.Name -match "LLVM|LTO|Remarks" } | ForEach-Object { Write-Host "  $($_.Name)" }
 
@@ -150,17 +153,21 @@ jobs:
       if: runner.os == 'Windows'
       uses: pypa/cibuildwheel@v2.21
       env:
-        CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+        # Only build for Python 3.13
+        CIBW_BUILD: "cp313-*"
         CIBW_SKIP: "*-win32"
         CIBW_ARCHS: ${{ matrix.arch }}
         CIBW_ENVIRONMENT: >
-          LLVM_DIR=${{ env.LLVM_DIR }}
-          CMAKE_PREFIX_PATH=${{ env.CMAKE_PREFIX_PATH }}
+          LLVM_DIR=$LLVM_DIR
+          CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH
         CIBW_BEFORE_BUILD: "pip install nanobind scikit-build-core cmake ninja delvewheel"
-        # delvewheel: use --add-path to specify where DLLs are located
-        # This bundles LLVM DLLs into the wheel
-        CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >
-          delvewheel repair --add-path "${{ env.LLVM_BIN_DIR }}" -w {dest_dir} {wheel}
+        CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: |
+          echo "=== Checking wheel dependencies ==="
+          delvewheel show {wheel} || echo "delvewheel show failed"
+          echo "=== Repairing wheel ==="
+          delvewheel repair --add-path "%LLVM_BIN_DIR%" -w {dest_dir} {wheel}
+          echo "=== Verifying repaired wheel ==="
+          delvewheel show {dest_dir}\*.whl || echo "verification skipped"
         CIBW_TEST_COMMAND: "python -c \"import justjit; print('justjit imported successfully')\""
         CIBW_BUILD_VERBOSITY: 3
 
