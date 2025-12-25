@@ -8,10 +8,9 @@ This document captures research gathered for implementing async/await JIT compil
 
 ## Current Status
 
-- [x] **Regular generators** work with JIT (state machine approach)
-- [x] **Async coroutines** (`async def`) work with JIT via `compile_generator`
-- [ ] **Async generators** (`async def` + `yield`) not yet supported
-- [ ] **Async iteration** (`async for`) not yet supported
+- ✅ **Regular generators** work with JIT (state machine approach)
+- ❌ **Async functions** (`async def`) fall back to Python with warning
+- ❌ **Async generators** (`async def` + `yield`) fall back to Python with warning
 
 ---
 
@@ -287,18 +286,18 @@ Need to create Python wrapper that:
 ## Implementation Checklist
 
 ### Phase 1: Basic Async Functions
-- [x] Implement `GET_AWAITABLE` opcode
-- [x] Implement `SEND` opcode with StopIteration handling
-- [x] Implement `END_SEND` cleanup
-- [x] Create coroutine wrapper class (JITCoroutine_Type)
-- [x] Handle RESUME context=3 (after await)
-- [x] Test with simple await expressions
+- [ ] Implement `GET_AWAITABLE` opcode
+- [ ] Implement `SEND` opcode with StopIteration handling
+- [ ] Implement `END_SEND` cleanup
+- [ ] Create coroutine wrapper class in Python
+- [ ] Handle RESUME context=3 (after await)
+- [ ] Test with simple await expressions
 
 ### Phase 2: Error Handling
-- [x] Implement `CLEANUP_THROW` opcode
-- [x] Add throw() method to wrapper
-- [x] Add close() method to wrapper
-- [x] Handle GeneratorExit properly
+- [ ] Implement `CLEANUP_THROW` opcode
+- [ ] Add throw() method to wrapper
+- [ ] Add close() method to wrapper
+- [ ] Handle GeneratorExit properly
 
 ### Phase 3: Async Generators
 - [ ] Implement `CALL_INTRINSIC_1` with ASYNC_GEN_WRAP

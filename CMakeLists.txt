@@ -53,28 +53,75 @@ nanobind_add_module(_core NB_STATIC NOMINSIZE
     src/bindings.cpp
 )
 
-# Link against the single shared LLVM library
-# conda-forge provides libLLVM-XX.so (Linux), libLLVM.dylib (macOS), LLVM-C.dll (Windows)
+# Link against LLVM libraries
+# Windows: LLVM-C.dll only exposes C API, so we must link static component libs for C++ API
+# Linux/macOS: Can use the unified libLLVM shared library
+
+# Map all required LLVM components to library names
+llvm_map_components_to_libnames(LLVM_LIBS
+    Core
+    Support
+    OrcJIT
+    ExecutionEngine
+    RuntimeDyld
+    native
+    Passes
+    TransformUtils
+    Analysis
+    Target
+    Object
+    MC
+    IRReader
+    InstCombine
+    ScalarOpts
+    Vectorize
+    IPO
+    Linker
+    BitWriter
+    BitReader
+    MCParser
+    ObjCARCOpts
+    AggressiveInstCombine
+    CodeGen
+    SelectionDAG
+    AsmPrinter
+    MIRParser
+    GlobalISel
+    DebugInfoDWARF
+    DebugInfoCodeView
+    DebugInfoMSF
+    DebugInfoPDB
+    Symbolize
+    Demangle
+    TextAPI
+    BinaryFormat
+    Remarks
+    ProfileData
+    Coverage
+    LTO
+    Extensions
+    CFGuard
+    Coroutines
+    JITLink
+    OrcTargetProcess
+    OrcShared
+    WindowsDriver
+    WindowsManifest
+)
+
+message(STATUS "LLVM libraries to link: ${LLVM_LIBS}")
+
 if(WIN32)
-    # Windows: Link against LLVM-C.lib (import library for LLVM-C.dll)
-    find_library(LLVM_SHARED_LIB NAMES LLVM-C LLVM PATHS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
-    if(LLVM_SHARED_LIB)
-        message(STATUS "Found LLVM shared library: ${LLVM_SHARED_LIB}")
-        target_link_libraries(_core PRIVATE ${LLVM_SHARED_LIB})
-    else()
-        # Fallback: use component libraries
-        llvm_map_components_to_libnames(LLVM_LIBS Core Support OrcJIT ExecutionEngine RuntimeDyld native Passes TransformUtils Analysis Target Object MC IRReader)
-        target_link_libraries(_core PRIVATE ${LLVM_LIBS})
-    endif()
+    # Windows: Must use static component libraries for C++ API
+    target_link_libraries(_core PRIVATE ${LLVM_LIBS})
 else()
-    # Linux/macOS: Link against libLLVM.so or libLLVM.dylib
+    # Linux/macOS: Try to use the unified shared library first
     find_library(LLVM_SHARED_LIB NAMES LLVM LLVM-${LLVM_VERSION_MAJOR} PATHS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
     if(LLVM_SHARED_LIB)
         message(STATUS "Found LLVM shared library: ${LLVM_SHARED_LIB}")
         target_link_libraries(_core PRIVATE ${LLVM_SHARED_LIB})
     else()
         # Fallback: use component libraries
-        llvm_map_components_to_libnames(LLVM_LIBS Core Support OrcJIT ExecutionEngine RuntimeDyld native Passes TransformUtils Analysis Target Object MC IRReader)
         target_link_libraries(_core PRIVATE ${LLVM_LIBS})
     endif()
 endif()
