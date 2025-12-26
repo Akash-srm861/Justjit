@@ -1,5 +1,6 @@
 #include "jit_core.h"
 #include "opcodes.h"
+#include "type_system.h"
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/PassManager.h>
@@ -37,6 +38,60 @@ extern "C" void jit_xincref(PyObject *obj)
 extern "C" void jit_xdecref(PyObject *obj)
 {
     Py_XDECREF(obj);
+}
+
+// =========================================================================
+// Box/Unbox Helper Functions (Phase 1 Type System)
+// =========================================================================
+// These functions convert between Python objects and native C types.
+// They are called at function entry (unbox) and exit (box) for typed mode.
+// =========================================================================
+
+// Unbox Python int to native int64
+extern "C" int64_t jit_unbox_int(PyObject *obj)
+{
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "cannot unbox None to int");
+        return -1;
+    }
+    return PyLong_AsLongLong(obj);
+}
+
+// Unbox Python float to native double
+extern "C" double jit_unbox_float(PyObject *obj)
+{
+    if (obj == NULL) {
+        PyErr_SetString(PyExc_TypeError, "cannot unbox None to float");
+        return -1.0;
+    }
+    return PyFloat_AsDouble(obj);
+}
+
+// Unbox Python bool to native int (0 or 1)
+extern "C" int64_t jit_unbox_bool(PyObject *obj)
+{
+    if (obj == NULL) {
+        return 0;
+    }
+    return PyObject_IsTrue(obj);
+}
+
+// Box native int64 to Python int
+extern "C" PyObject *jit_box_int(int64_t val)
+{
+    return PyLong_FromLongLong(val);
+}
+
+// Box native double to Python float
+extern "C" PyObject *jit_box_float(double val)
+{
+    return PyFloat_FromDouble(val);
+}
+
+// Box native bool (0/1) to Python bool
+extern "C" PyObject *jit_box_bool(int64_t val)
+{
+    return PyBool_FromLong(val);
 }
 
 // C helper function for CALL_KW opcode
@@ -427,6 +482,31 @@ namespace justjit
 
         helper_symbols[es.intern("jit_debug_stack")] = {
             llvm::orc::ExecutorAddr::fromPtr(jit_debug_stack),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Register box/unbox helpers (Phase 1 Type System)
+        helper_symbols[es.intern("jit_unbox_int")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_unbox_int),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_unbox_float")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_unbox_float),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_unbox_bool")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_unbox_bool),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_box_int")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_box_int),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_box_float")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_box_float),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_box_bool")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_box_bool),
             llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
 
         auto err = jd.define(llvm::orc::absoluteSymbols(helper_symbols));
@@ -963,6 +1043,32 @@ namespace justjit
         llvm::FunctionType *function_set_closure_type = llvm::FunctionType::get(
             builder->getInt32Ty(), {ptr_type, ptr_type}, false);
         py_function_set_closure_func = llvm::Function::Create(function_set_closure_type, llvm::Function::ExternalLinkage, "PyFunction_SetClosure", module);
+
+        // ========== Box/Unbox API (Phase 1 Type System) ==========
+
+        // long long PyLong_AsLongLong(PyObject* obj)
+        // Convert Python int to C long long (64-bit signed integer)
+        // Returns -1 on error with exception set
+        llvm::FunctionType *long_aslonglong_type = llvm::FunctionType::get(i64_type, {ptr_type}, false);
+        py_long_aslonglong_func = llvm::Function::Create(long_aslonglong_type, llvm::Function::ExternalLinkage, "PyLong_AsLongLong", module);
+
+        // double PyFloat_AsDouble(PyObject* obj)
+        // Convert Python float to C double
+        // Returns -1.0 on error with exception set
+        llvm::FunctionType *float_asdouble_type = llvm::FunctionType::get(builder->getDoubleTy(), {ptr_type}, false);
+        py_float_asdouble_func = llvm::Function::Create(float_asdouble_type, llvm::Function::ExternalLinkage, "PyFloat_AsDouble", module);
+
+        // PyObject* PyFloat_FromDouble(double v)
+        // Create Python float from C double
+        // Returns new reference on success, NULL on failure
+        llvm::FunctionType *float_fromdouble_type = llvm::FunctionType::get(ptr_type, {builder->getDoubleTy()}, false);
+        py_float_fromdouble_func = llvm::Function::Create(float_fromdouble_type, llvm::Function::ExternalLinkage, "PyFloat_FromDouble", module);
+
+        // PyObject* PyBool_FromLong(long v)
+        // Return Py_True or Py_False depending on v
+        // Always succeeds (no NULL return)
+        llvm::FunctionType *bool_fromlong_type = llvm::FunctionType::get(ptr_type, {i64_type}, false);
+        py_bool_fromlong_func = llvm::Function::Create(bool_fromlong_type, llvm::Function::ExternalLinkage, "PyBool_FromLong", module);
 
         // PyObject* jit_call_with_kwargs(PyObject* callable, PyObject** args, Py_ssize_t nargs, PyObject* kwnames)
         // Our C helper for CALL_KW opcode - splits args and builds kwargs dict at runtime

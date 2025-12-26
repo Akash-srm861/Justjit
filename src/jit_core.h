@@ -269,6 +269,12 @@ namespace justjit
         llvm::Function *py_function_set_annotations_func = nullptr; // int PyFunction_SetAnnotations(PyObject* func, PyObject* annotations)
         llvm::Function *py_function_set_closure_func = nullptr;     // int PyFunction_SetClosure(PyObject* func, PyObject* closure)
 
+        // Box/Unbox API functions (Phase 1 Type System)
+        llvm::Function *py_long_aslonglong_func = nullptr;   // long long PyLong_AsLongLong(PyObject*)
+        llvm::Function *py_float_asdouble_func = nullptr;    // double PyFloat_AsDouble(PyObject*)
+        llvm::Function *py_float_fromdouble_func = nullptr;  // PyObject* PyFloat_FromDouble(double)
+        llvm::Function *py_bool_fromlong_func = nullptr;     // PyObject* PyBool_FromLong(long)
+
         // JIT helper functions
         llvm::Function *jit_call_with_kwargs_func = nullptr; // PyObject* jit_call_with_kwargs(...) for CALL_KW
         llvm::Function *jit_debug_trace_func = nullptr;      // void jit_debug_trace(...) for debugging
