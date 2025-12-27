@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
 authors = [
-    { name = "JustJIT Contributors" },
+    { name = "Magi8101", email = "sharmamagi0@gmail.com" },
 ]
 keywords = ["jit", "compiler", "llvm", "python", "optimization", "performance"]
 classifiers = [
@@ -22,7 +22,9 @@ classifiers = [
     "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Code Generators",
 ]
-dependencies = []
+dependencies = [
+    "numpy",
+]
 
 [project.urls]
 Homepage = "https://github.com/magi8101/justjit"

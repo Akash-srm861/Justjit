@@ -8,7 +8,7 @@ A high-performance Just-In-Time compiler for Python that leverages LLVM's ORC JI
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![LLVM 18](https://img.shields.io/badge/LLVM-18.1.8-orange.svg)](https://llvm.org/)
+[![LLVM 20](https://img.shields.io/badge/LLVM-20.0.0-orange.svg)](https://llvm.org/)
 
 ---
 
@@ -58,6 +58,7 @@ JustJIT transforms Python functions into optimized native machine code using LLV
 ### Advanced Features
 - **Generator Support**: Full state machine implementation for `yield`
 - **Coroutine Support**: Async/await with proper awaitable protocol
+- **Async Generator Support**: `async def` with `yield` fully supported
 - **Exception Handling**: Python 3.11+ exception table parsing
 - **Pattern Matching**: `match`/`case` statements with CFG analysis
 - **Closure Support**: Captured variables from enclosing scopes
@@ -144,6 +145,24 @@ def sum_range(n):
 result = sum_range(1000000)
 ```
 
+### Async Generators
+
+```python
+from justjit import jit
+import asyncio
+
+@jit
+async def async_range(n):
+    for i in range(n):
+        yield i
+
+async def main():
+    async for x in async_range(5):
+        print(x)  # Prints 0, 1, 2, 3, 4
+
+asyncio.run(main())
+```
+
 ---
 
 ## Architecture
@@ -153,31 +172,42 @@ result = sum_range(1000000)
 ```
 justjit/
 ├── src/
-│   ├── jit_core.cpp       # Core JIT engine (~12,000 lines)
+│   ├── jit_core.cpp       # Core JIT engine (~15,800 lines)
 │   │                      # - Opcode handlers for all Python bytecode
-│   │                      # - Generator state machine compiler
+│   │                      # - Generator state machine compiler  
 │   │                      # - Coroutine compiler with await handling
+│   │                      # - Async generator helpers (GET_AITER, GET_ANEXT, etc.)
 │   │                      # - CFG analysis and PHI node generation
 │   │                      # - Exception table parsing and handling
-│   ├── jit_core.h         # JIT engine header
+│   ├── jit_core.h         # JIT engine header (~400 lines)
 │   │                      # - JITGeneratorObject and JITCoroutineObject types
 │   │                      # - BasicBlockInfo and CFGStackState for CFG
 │   │                      # - Python C API function declarations
-│   ├── bindings.cpp       # nanobind Python bindings
+│   ├── bindings.cpp       # nanobind Python bindings (~300 lines)
 │   ├── opcodes.h          # Python 3.13 opcode definitions
+│   ├── type_system.h      # Type system header for specialized modes
+│   ├── gen_opcodes.h      # Generated opcode handlers (batch 1)
+│   ├── gen_opcodes_batch2.h # Generated opcode handlers (batch 2)
 │   └── justjit/
-│       └── __init__.py    # Python interface (~800 lines)
+│       └── __init__.py    # Python interface (~1,150 lines)
 │                          # - @jit decorator
-│                          # - Bytecode extraction
+│                          # - Bytecode extraction helpers
 │                          # - Exception table parsing
-│                          # - Fallback handling
-├── docs/
-│   ├── OPCODES_REFERENCE.md      # Detailed opcode documentation
-│   └── ASYNC_IMPLEMENTATION_RESEARCH.md
-├── CMakeLists.txt         # Build configuration
+│                          # - Async generator adapter (_AsyncGeneratorAdapter)
+│                          # - Fallback handling for unsupported patterns
+├── docs/                  # Sphinx documentation
+│   ├── api.rst            # API reference
+│   ├── async.rst          # Async/generator documentation
+│   ├── cfg.rst            # Control flow graph docs
+│   ├── internals.rst      # Internal architecture
+│   ├── modes.rst          # Compilation modes
+│   ├── performance.rst    # Performance guide
+│   └── quickstart.rst     # Quick start guide
+├── assets/                # Project assets (logo, etc.)
+├── CMakeLists.txt         # CMake build configuration
 ├── pyproject.toml         # Python package metadata
-├── OPCODE_STATUS.md       # Implementation status tracker
-└── CFG_IMPLEMENTATION_PLAN.md    # CFG architecture design
+├── LICENSE                # Apache 2.0 License
+└── README.md              # This file
 ```
 
 ### Core Components
@@ -397,10 +427,8 @@ auto check_error_and_branch = [&](llvm::Value* result, ...) {
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| **Async Generators** | ❌ | `async def` with `yield` |
-| **`async for`** | ❌ | Needs `GET_AITER`/`GET_ANEXT` |
-| **`async with`** | ⚠️ | Basic support, not fully tested |
 | **Generator Comprehensions in Generators** | ❌ | Complex stack handling across yields |
+| **`async with` (complex cases)** | ⚠️ | Basic support, not fully tested |
 
 ### Known Issues
 
