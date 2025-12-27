@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath('../src'))
 # -- Project information -----------------------------------------------------
 
 project = 'JustJIT'
-copyright = '2024, JustJIT Contributors'
+copyright = '2024, Magi-sharma'
 author = 'Magi-sharma'
 release = '0.1.4'
 version = '0.1.4'
