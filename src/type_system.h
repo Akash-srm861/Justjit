@@ -18,6 +18,14 @@ enum class JITType : uint8_t
     FLOAT64 = 2,  // double (native floating point)
     BOOL = 3,     // bool (i1, true/false)
     UINT64 = 4,   // uint64_t (native unsigned integer)
+    INT32 = 5,    // int32_t (32-bit signed, C interop)
+    FLOAT32 = 6,  // float (32-bit float, SIMD/ML)
+    COMPLEX128 = 7, // {double, double} (complex number, real + imag)
+    PTR_F64 = 8,  // ptr to double array (array operations)
+    VEC4F = 9,    // <4 x float> (SSE SIMD)
+    VEC8I = 10,   // <8 x i32> (AVX SIMD)
+    COMPLEX64 = 11, // {float, float} (single-precision complex)
+    OPTIONAL_F64 = 12, // {i1, f64} (nullable float64)
 };
 
 // Convert JITType to LLVM Type

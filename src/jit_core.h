@@ -155,6 +155,26 @@ namespace justjit
         nb::object get_int_callable(const std::string &name, int param_count); // For integer-mode functions
         bool compile_function(nb::list py_instructions, nb::list py_constants, nb::list py_names, nb::object py_globals_dict, nb::object py_builtins_dict, nb::list py_closure_cells, nb::list py_exception_table, const std::string &name, int param_count = 2, int total_locals = 3, int nlocals = 3);
         bool compile_int_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Integer-only mode
+        bool compile_float_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Float-only mode
+        nb::object get_float_callable(const std::string &name, int param_count); // For float-mode functions
+        bool compile_bool_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Bool-only mode
+        nb::object get_bool_callable(const std::string &name, int param_count); // For bool-mode functions
+        bool compile_int32_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Int32 mode (C interop)
+        nb::object get_int32_callable(const std::string &name, int param_count); // For int32-mode functions
+        bool compile_float32_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Float32 mode (SIMD/ML)
+        nb::object get_float32_callable(const std::string &name, int param_count); // For float32-mode functions
+        bool compile_complex128_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Complex128 mode (scientific)
+        nb::object get_complex128_callable(const std::string &name, int param_count); // For complex128-mode functions
+        bool compile_ptr_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Ptr mode (array access)
+        nb::object get_ptr_callable(const std::string &name, int param_count); // For ptr-mode functions
+        bool compile_vec4f_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Vec4f mode (SSE SIMD)
+        nb::object get_vec4f_callable(const std::string &name, int param_count); // For vec4f-mode functions
+        bool compile_vec8i_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Vec8i mode (AVX SIMD)
+        nb::object get_vec8i_callable(const std::string &name, int param_count); // For vec8i-mode functions
+        bool compile_complex64_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Complex64 mode (single-precision)
+        nb::object get_complex64_callable(const std::string &name, int param_count); // For complex64-mode functions
+        bool compile_optional_f64_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count = 2, int total_locals = 3); // Optional<f64> mode (nullable)
+        nb::object get_optional_f64_callable(const std::string &name, int param_count); // For optional_f64-mode functions
         
         // Generator compilation - transforms generator function to state machine step function
         bool compile_generator(nb::list py_instructions, nb::list py_constants, nb::list py_names, 
@@ -316,6 +336,59 @@ namespace justjit
         nb::object create_int_callable_2(uint64_t func_ptr);
         nb::object create_int_callable_3(uint64_t func_ptr);
         nb::object create_int_callable_4(uint64_t func_ptr);
+
+        // Float-mode callable generators (native f64 -> f64 functions)
+        nb::object create_float_callable_0(uint64_t func_ptr);
+        nb::object create_float_callable_1(uint64_t func_ptr);
+        nb::object create_float_callable_2(uint64_t func_ptr);
+        nb::object create_float_callable_3(uint64_t func_ptr);
+        nb::object create_float_callable_4(uint64_t func_ptr);
+
+        // Bool-mode callable generators (native i64 -> bool functions)
+        nb::object create_bool_callable_0(uint64_t func_ptr);
+        nb::object create_bool_callable_1(uint64_t func_ptr);
+        nb::object create_bool_callable_2(uint64_t func_ptr);
+        nb::object create_bool_callable_3(uint64_t func_ptr);
+        nb::object create_bool_callable_4(uint64_t func_ptr);
+
+        // Int32-mode callable generators (native i32 functions)
+        nb::object create_int32_callable_0(uint64_t func_ptr);
+        nb::object create_int32_callable_1(uint64_t func_ptr);
+        nb::object create_int32_callable_2(uint64_t func_ptr);
+        nb::object create_int32_callable_3(uint64_t func_ptr);
+        nb::object create_int32_callable_4(uint64_t func_ptr);
+
+        // Float32-mode callable generators (native f32 functions)
+        nb::object create_float32_callable_0(uint64_t func_ptr);
+        nb::object create_float32_callable_1(uint64_t func_ptr);
+        nb::object create_float32_callable_2(uint64_t func_ptr);
+        nb::object create_float32_callable_3(uint64_t func_ptr);
+        nb::object create_float32_callable_4(uint64_t func_ptr);
+
+        // Complex128-mode callable generators (native {double,double} functions)
+        nb::object create_complex128_callable_0(uint64_t func_ptr);
+        nb::object create_complex128_callable_1(uint64_t func_ptr);
+        nb::object create_complex128_callable_2(uint64_t func_ptr);
+
+        // Ptr-mode callable generators (ptr + index operations)
+        nb::object create_ptr_callable_2(uint64_t func_ptr);
+        nb::object create_ptr_callable_3(uint64_t func_ptr);
+
+        // Vec4f-mode callable generators (<4 x float> SIMD)
+        nb::object create_vec4f_callable_2(uint64_t func_ptr);
+
+        // Vec8i-mode callable generators (<8 x i32> SIMD)
+        nb::object create_vec8i_callable_2(uint64_t func_ptr);
+
+        // Complex64-mode callable generators ({float, float})
+        nb::object create_complex64_callable_0(uint64_t func_ptr);
+        nb::object create_complex64_callable_1(uint64_t func_ptr);
+        nb::object create_complex64_callable_2(uint64_t func_ptr);
+
+        // OptionalF64-mode callable generators ({bool, double})
+        nb::object create_optional_f64_callable_0(uint64_t func_ptr);
+        nb::object create_optional_f64_callable_1(uint64_t func_ptr);
+        nb::object create_optional_f64_callable_2(uint64_t func_ptr);
 
         void optimize_module(llvm::Module &module, llvm::Function *func);
     };

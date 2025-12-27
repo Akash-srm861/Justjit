@@ -22,6 +22,23 @@ find_package(nanobind CONFIG REQUIRED)
 # LLVM configuration
 # conda-forge llvmdev provides DYNAMIC libraries (libLLVM.so / LLVM.dll)
 # We link dynamically and bundle the shared lib into the wheel
+
+# On Windows, LLVM may have been built with LibXml2 dependency
+# Find it before LLVM to satisfy LLVMExports.cmake requirements
+if(WIN32)
+    find_package(LibXml2 QUIET)
+    if(LibXml2_FOUND)
+        message(STATUS "Found LibXml2: ${LIBXML2_LIBRARIES}")
+    else()
+        # Create an empty imported target to satisfy LLVM dependency
+        # LLVM may not actually need it at runtime for our use case
+        if(NOT TARGET LibXml2::LibXml2)
+            add_library(LibXml2::LibXml2 INTERFACE IMPORTED)
+            message(STATUS "Created stub LibXml2::LibXml2 target for LLVM dependency")
+        endif()
+    endif()
+endif()
+
 find_package(LLVM REQUIRED CONFIG)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")

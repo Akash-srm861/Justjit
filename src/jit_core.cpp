@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstring>
 #include <sstream>
+#include <complex>
 
 // Python code object flags - define if not available
 // CO_ITERABLE_COROUTINE marks generators that can be used in await expressions
@@ -7411,6 +7412,68 @@ namespace justjit
                                 { return fn_ptr(a, b, c, d); });
     }
 
+    // Float-mode callable generators (native f64 -> f64 functions)
+    // These bypass PyObject* entirely for maximum performance with floating-point
+    nb::object JITCore::create_float_callable_0(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<double (*)()>(func_ptr);
+        return nb::cpp_function([fn_ptr]() -> double
+                                { return fn_ptr(); });
+    }
+
+    nb::object JITCore::create_float_callable_1(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<double (*)(double)>(func_ptr);
+        return nb::cpp_function([fn_ptr](double a) -> double
+                                { return fn_ptr(a); });
+    }
+
+    nb::object JITCore::create_float_callable_2(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<double (*)(double, double)>(func_ptr);
+        return nb::cpp_function([fn_ptr](double a, double b) -> double
+                                { return fn_ptr(a, b); });
+    }
+
+    nb::object JITCore::create_float_callable_3(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<double (*)(double, double, double)>(func_ptr);
+        return nb::cpp_function([fn_ptr](double a, double b, double c) -> double
+                                { return fn_ptr(a, b, c); });
+    }
+
+    nb::object JITCore::create_float_callable_4(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<double (*)(double, double, double, double)>(func_ptr);
+        return nb::cpp_function([fn_ptr](double a, double b, double c, double d) -> double
+                                { return fn_ptr(a, b, c, d); });
+    }
+
+    nb::object JITCore::get_float_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+        {
+            throw std::runtime_error("Failed to find JIT function: " + name);
+        }
+
+        switch (param_count)
+        {
+        case 0:
+            return create_float_callable_0(func_ptr);
+        case 1:
+            return create_float_callable_1(func_ptr);
+        case 2:
+            return create_float_callable_2(func_ptr);
+        case 3:
+            return create_float_callable_3(func_ptr);
+        case 4:
+            return create_float_callable_4(func_ptr);
+        default:
+            throw std::runtime_error("Float mode supports up to 4 parameters");
+        }
+    }
+
     nb::object JITCore::get_int_callable(const std::string &name, int param_count)
     {
         uint64_t func_ptr = lookup_symbol(name);
@@ -7433,6 +7496,549 @@ namespace justjit
             return create_int_callable_4(func_ptr);
         default:
             throw std::runtime_error("Integer mode supports up to 4 parameters");
+        }
+    }
+
+    // Bool-mode callable generators (native i64 -> Python bool functions)
+    // These return True/False based on native 0/1 values
+    nb::object JITCore::create_bool_callable_0(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int64_t (*)()>(func_ptr);
+        return nb::cpp_function([fn_ptr]() -> bool
+                                { return fn_ptr() != 0; });
+    }
+
+    nb::object JITCore::create_bool_callable_1(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int64_t (*)(int64_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](bool a) -> bool
+                                { return fn_ptr(a ? 1 : 0) != 0; });
+    }
+
+    nb::object JITCore::create_bool_callable_2(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int64_t (*)(int64_t, int64_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](bool a, bool b) -> bool
+                                { return fn_ptr(a ? 1 : 0, b ? 1 : 0) != 0; });
+    }
+
+    nb::object JITCore::create_bool_callable_3(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int64_t (*)(int64_t, int64_t, int64_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](bool a, bool b, bool c) -> bool
+                                { return fn_ptr(a ? 1 : 0, b ? 1 : 0, c ? 1 : 0) != 0; });
+    }
+
+    nb::object JITCore::create_bool_callable_4(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int64_t (*)(int64_t, int64_t, int64_t, int64_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](bool a, bool b, bool c, bool d) -> bool
+                                { return fn_ptr(a ? 1 : 0, b ? 1 : 0, c ? 1 : 0, d ? 1 : 0) != 0; });
+    }
+
+    nb::object JITCore::get_bool_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+        {
+            throw std::runtime_error("Failed to find JIT function: " + name);
+        }
+
+        switch (param_count)
+        {
+        case 0:
+            return create_bool_callable_0(func_ptr);
+        case 1:
+            return create_bool_callable_1(func_ptr);
+        case 2:
+            return create_bool_callable_2(func_ptr);
+        case 3:
+            return create_bool_callable_3(func_ptr);
+        case 4:
+            return create_bool_callable_4(func_ptr);
+        default:
+            throw std::runtime_error("Bool mode supports up to 4 parameters");
+        }
+    }
+
+    // Int32-mode callable generators (native i32 functions)
+    nb::object JITCore::create_int32_callable_0(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int32_t (*)()>(func_ptr);
+        return nb::cpp_function([fn_ptr]() -> int32_t { return fn_ptr(); });
+    }
+
+    nb::object JITCore::create_int32_callable_1(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int32_t (*)(int32_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](int32_t a) -> int32_t { return fn_ptr(a); });
+    }
+
+    nb::object JITCore::create_int32_callable_2(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int32_t (*)(int32_t, int32_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](int32_t a, int32_t b) -> int32_t { return fn_ptr(a, b); });
+    }
+
+    nb::object JITCore::create_int32_callable_3(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int32_t (*)(int32_t, int32_t, int32_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](int32_t a, int32_t b, int32_t c) -> int32_t { return fn_ptr(a, b, c); });
+    }
+
+    nb::object JITCore::create_int32_callable_4(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<int32_t (*)(int32_t, int32_t, int32_t, int32_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](int32_t a, int32_t b, int32_t c, int32_t d) -> int32_t { return fn_ptr(a, b, c, d); });
+    }
+
+    nb::object JITCore::get_int32_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+        {
+            throw std::runtime_error("Failed to find JIT function: " + name);
+        }
+
+        switch (param_count)
+        {
+        case 0:
+            return create_int32_callable_0(func_ptr);
+        case 1:
+            return create_int32_callable_1(func_ptr);
+        case 2:
+            return create_int32_callable_2(func_ptr);
+        case 3:
+            return create_int32_callable_3(func_ptr);
+        case 4:
+            return create_int32_callable_4(func_ptr);
+        default:
+            throw std::runtime_error("Int32 mode supports up to 4 parameters");
+        }
+    }
+
+    // Float32-mode callable generators (native f32 functions)
+    nb::object JITCore::create_float32_callable_0(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<float (*)()>(func_ptr);
+        return nb::cpp_function([fn_ptr]() -> float { return fn_ptr(); });
+    }
+
+    nb::object JITCore::create_float32_callable_1(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<float (*)(float)>(func_ptr);
+        return nb::cpp_function([fn_ptr](float a) -> float { return fn_ptr(a); });
+    }
+
+    nb::object JITCore::create_float32_callable_2(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<float (*)(float, float)>(func_ptr);
+        return nb::cpp_function([fn_ptr](float a, float b) -> float { return fn_ptr(a, b); });
+    }
+
+    nb::object JITCore::create_float32_callable_3(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<float (*)(float, float, float)>(func_ptr);
+        return nb::cpp_function([fn_ptr](float a, float b, float c) -> float { return fn_ptr(a, b, c); });
+    }
+
+    nb::object JITCore::create_float32_callable_4(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<float (*)(float, float, float, float)>(func_ptr);
+        return nb::cpp_function([fn_ptr](float a, float b, float c, float d) -> float { return fn_ptr(a, b, c, d); });
+    }
+
+    nb::object JITCore::get_float32_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+        {
+            throw std::runtime_error("Failed to find JIT function: " + name);
+        }
+
+        switch (param_count)
+        {
+        case 0:
+            return create_float32_callable_0(func_ptr);
+        case 1:
+            return create_float32_callable_1(func_ptr);
+        case 2:
+            return create_float32_callable_2(func_ptr);
+        case 3:
+            return create_float32_callable_3(func_ptr);
+        case 4:
+            return create_float32_callable_4(func_ptr);
+        default:
+            throw std::runtime_error("Float32 mode supports up to 4 parameters");
+        }
+    }
+
+    // Complex128 struct for passing complex numbers by value
+    struct Complex128 {
+        double real;
+        double imag;
+    };
+
+    // Complex128-mode callable generators (native {double,double} functions)
+    nb::object JITCore::create_complex128_callable_0(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<Complex128 (*)()>(func_ptr);
+        return nb::cpp_function([fn_ptr]() -> nb::object {
+            Complex128 result = fn_ptr();
+            return nb::cast(std::complex<double>(result.real, result.imag));
+        });
+    }
+
+    nb::object JITCore::create_complex128_callable_1(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<Complex128 (*)(Complex128)>(func_ptr);
+        return nb::cpp_function([fn_ptr](std::complex<double> a) -> nb::object {
+            Complex128 arg = {a.real(), a.imag()};
+            Complex128 result = fn_ptr(arg);
+            return nb::cast(std::complex<double>(result.real, result.imag));
+        });
+    }
+
+    nb::object JITCore::create_complex128_callable_2(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<Complex128 (*)(Complex128, Complex128)>(func_ptr);
+        return nb::cpp_function([fn_ptr](std::complex<double> a, std::complex<double> b) -> nb::object {
+            Complex128 arg1 = {a.real(), a.imag()};
+            Complex128 arg2 = {b.real(), b.imag()};
+            Complex128 result = fn_ptr(arg1, arg2);
+            return nb::cast(std::complex<double>(result.real, result.imag));
+        });
+    }
+
+    nb::object JITCore::get_complex128_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+        {
+            throw std::runtime_error("Failed to find JIT function: " + name);
+        }
+
+        switch (param_count)
+        {
+        case 0:
+            return create_complex128_callable_0(func_ptr);
+        case 1:
+            return create_complex128_callable_1(func_ptr);
+        case 2:
+            return create_complex128_callable_2(func_ptr);
+        default:
+            throw std::runtime_error("Complex128 mode supports up to 2 parameters");
+        }
+    }
+
+    // Complex64 struct for passing single-precision complex numbers by value
+    struct Complex64 {
+        float real;
+        float imag;
+    };
+
+    // Complex64-mode callable generators (native {float,float} functions)
+    nb::object JITCore::create_complex64_callable_0(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<Complex64 (*)()>(func_ptr);
+        return nb::cpp_function([fn_ptr]() -> nb::object {
+            Complex64 result = fn_ptr();
+            return nb::cast(std::complex<float>(result.real, result.imag));
+        });
+    }
+
+    nb::object JITCore::create_complex64_callable_1(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<Complex64 (*)(Complex64)>(func_ptr);
+        return nb::cpp_function([fn_ptr](std::complex<float> a) -> nb::object {
+            Complex64 arg = {a.real(), a.imag()};
+            Complex64 result = fn_ptr(arg);
+            return nb::cast(std::complex<float>(result.real, result.imag));
+        });
+    }
+
+    nb::object JITCore::create_complex64_callable_2(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<Complex64 (*)(Complex64, Complex64)>(func_ptr);
+        return nb::cpp_function([fn_ptr](std::complex<float> a, std::complex<float> b) -> nb::object {
+            Complex64 arg1 = {a.real(), a.imag()};
+            Complex64 arg2 = {b.real(), b.imag()};
+            Complex64 result = fn_ptr(arg1, arg2);
+            return nb::cast(std::complex<float>(result.real, result.imag));
+        });
+    }
+
+    nb::object JITCore::get_complex64_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+        {
+            throw std::runtime_error("Failed to find JIT function: " + name);
+        }
+
+        switch (param_count)
+        {
+        case 0:
+            return create_complex64_callable_0(func_ptr);
+        case 1:
+            return create_complex64_callable_1(func_ptr);
+        case 2:
+            return create_complex64_callable_2(func_ptr);
+        default:
+            throw std::runtime_error("Complex64 mode supports up to 2 parameters");
+        }
+    }
+
+    // OptionalF64 struct for nullable float64 values
+    // Uses int64_t for has_value to ensure ABI compatibility with LLVM {i64, f64}
+    struct OptionalF64 {
+        int64_t has_value;  // 0 = None, 1 = Some
+        double value;
+    };
+
+    // OptionalF64-mode callable generators using pointer-based ABI
+    // Signature: void fn(OptionalF64* out, OptionalF64* a, OptionalF64* b)
+    // Returns None if has_value is 0, otherwise returns the double
+    nb::object JITCore::create_optional_f64_callable_0(uint64_t func_ptr)
+    {
+        // No-arg function: void fn(OptionalF64* out)
+        auto fn_ptr = reinterpret_cast<void (*)(OptionalF64*)>(func_ptr);
+        return nb::cpp_function([fn_ptr]() -> nb::object {
+            OptionalF64 result;
+            fn_ptr(&result);
+            if (result.has_value) {
+                return nb::cast(result.value);
+            }
+            return nb::none();
+        });
+    }
+
+    nb::object JITCore::create_optional_f64_callable_1(uint64_t func_ptr)
+    {
+        // 1-arg function: void fn(OptionalF64* out, OptionalF64* a)
+        auto fn_ptr = reinterpret_cast<void (*)(OptionalF64*, OptionalF64*)>(func_ptr);
+        return nb::cpp_function([fn_ptr](nb::object a) -> nb::object {
+            OptionalF64 arg, result;
+            if (a.is_none()) {
+                arg = {0, 0.0};
+            } else {
+                arg = {1, nb::cast<double>(a)};
+            }
+            fn_ptr(&result, &arg);
+            if (result.has_value) {
+                return nb::cast(result.value);
+            }
+            return nb::none();
+        });
+    }
+
+    nb::object JITCore::create_optional_f64_callable_2(uint64_t func_ptr)
+    {
+        // 2-arg function: void fn(OptionalF64* out, OptionalF64* a, OptionalF64* b)
+        auto fn_ptr = reinterpret_cast<void (*)(OptionalF64*, OptionalF64*, OptionalF64*)>(func_ptr);
+        return nb::cpp_function([fn_ptr](nb::object a, nb::object b) -> nb::object {
+            OptionalF64 arg1, arg2, result;
+            if (a.is_none()) {
+                arg1 = {0, 0.0};
+            } else {
+                arg1 = {1, nb::cast<double>(a)};
+            }
+            if (b.is_none()) {
+                arg2 = {0, 0.0};
+            } else {
+                arg2 = {1, nb::cast<double>(b)};
+            }
+            fn_ptr(&result, &arg1, &arg2);
+            if (result.has_value) {
+                return nb::cast(result.value);
+            }
+            return nb::none();
+        });
+    }
+
+    nb::object JITCore::get_optional_f64_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+        {
+            throw std::runtime_error("Failed to find JIT function: " + name);
+        }
+
+        switch (param_count)
+        {
+        case 0:
+            return create_optional_f64_callable_0(func_ptr);
+        case 1:
+            return create_optional_f64_callable_1(func_ptr);
+        case 2:
+            return create_optional_f64_callable_2(func_ptr);
+        default:
+            throw std::runtime_error("OptionalF64 mode supports up to 2 parameters");
+        }
+    }
+
+    // Ptr-mode callable generators (for array operations)
+    // Ptr mode takes a pointer (as i64) and index, returns double
+    nb::object JITCore::create_ptr_callable_2(uint64_t func_ptr)
+    {
+        // Function signature: double fn(ptr, i64)
+        auto fn_ptr = reinterpret_cast<double (*)(double*, int64_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](nb::object arr_obj, int64_t idx) -> double {
+            // Handle numpy arrays by extracting data pointer
+            double* ptr = nullptr;
+            if (nb::hasattr(arr_obj, "ctypes")) {
+                // NumPy array - get data pointer via ctypes.data
+                nb::object ctypes = arr_obj.attr("ctypes");
+                nb::object data = ctypes.attr("data");
+                ptr = reinterpret_cast<double*>(nb::cast<uintptr_t>(data));
+            } else if (nb::isinstance<nb::int_>(arr_obj)) {
+                // Raw pointer passed as integer
+                ptr = reinterpret_cast<double*>(nb::cast<uintptr_t>(arr_obj));
+            } else {
+                throw std::runtime_error("ptr mode requires numpy array or raw pointer");
+            }
+            return fn_ptr(ptr, idx);
+        });
+    }
+
+    nb::object JITCore::create_ptr_callable_3(uint64_t func_ptr)
+    {
+        // Function signature: double fn(ptr, i64, i64) - e.g., array sum with ptr, start, end
+        auto fn_ptr = reinterpret_cast<double (*)(double*, int64_t, int64_t)>(func_ptr);
+        return nb::cpp_function([fn_ptr](nb::object arr_obj, int64_t arg1, int64_t arg2) -> double {
+            double* ptr = nullptr;
+            if (nb::hasattr(arr_obj, "ctypes")) {
+                nb::object ctypes = arr_obj.attr("ctypes");
+                nb::object data = ctypes.attr("data");
+                ptr = reinterpret_cast<double*>(nb::cast<uintptr_t>(data));
+            } else if (nb::isinstance<nb::int_>(arr_obj)) {
+                ptr = reinterpret_cast<double*>(nb::cast<uintptr_t>(arr_obj));
+            } else {
+                throw std::runtime_error("ptr mode requires numpy array or raw pointer");
+            }
+            return fn_ptr(ptr, arg1, arg2);
+        });
+    }
+
+    nb::object JITCore::get_ptr_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+        {
+            throw std::runtime_error("Failed to find JIT function: " + name);
+        }
+
+        switch (param_count)
+        {
+        case 2:
+            return create_ptr_callable_2(func_ptr);
+        case 3:
+            return create_ptr_callable_3(func_ptr);
+        default:
+            throw std::runtime_error("Ptr mode supports 2-3 parameters (ptr + indices)");
+        }
+    }
+
+    // Vec4f struct for 4-way float SIMD
+    struct alignas(16) Vec4f {
+        float data[4];
+    };
+
+    // Vec8i struct for 8-way int32 SIMD
+    struct alignas(32) Vec8i {
+        int32_t data[8];
+    };
+
+    // Vec4f-mode callable (takes 2 numpy float32 arrays of length 4, returns float32 array)
+    // New signature: void fn(float* out, float* a, float* b)
+    nb::object JITCore::create_vec4f_callable_2(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<void (*)(float*, float*, float*)>(func_ptr);
+        return nb::cpp_function([fn_ptr](nb::object a_obj, nb::object b_obj) -> nb::object {
+            alignas(16) float a_buf[4] = {};
+            alignas(16) float b_buf[4] = {};
+            alignas(16) float out_buf[4] = {};
+            
+            // Extract data from NumPy arrays
+            if (nb::hasattr(a_obj, "ctypes")) {
+                nb::object ctypes_a = a_obj.attr("ctypes");
+                nb::object data_a = ctypes_a.attr("data");
+                float* ptr_a = reinterpret_cast<float*>(nb::cast<uintptr_t>(data_a));
+                for (int i = 0; i < 4; ++i) a_buf[i] = ptr_a[i];
+            }
+            if (nb::hasattr(b_obj, "ctypes")) {
+                nb::object ctypes_b = b_obj.attr("ctypes");
+                nb::object data_b = ctypes_b.attr("data");
+                float* ptr_b = reinterpret_cast<float*>(nb::cast<uintptr_t>(data_b));
+                for (int i = 0; i < 4; ++i) b_buf[i] = ptr_b[i];
+            }
+            
+            fn_ptr(out_buf, a_buf, b_buf);
+            
+            nb::list ret;
+            for (int i = 0; i < 4; ++i) ret.append(out_buf[i]);
+            return ret;
+        });
+    }
+
+    nb::object JITCore::get_vec4f_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+            throw std::runtime_error("Failed to find JIT function: " + name);
+
+        switch (param_count)
+        {
+        case 2:
+            return create_vec4f_callable_2(func_ptr);
+        default:
+            throw std::runtime_error("Vec4f mode supports 2 parameters");
+        }
+    }
+
+    // Vec8i-mode callable (takes 2 numpy int32 arrays of length 8, returns int32 array)
+    // New signature: void fn(int32_t* out, int32_t* a, int32_t* b)
+    nb::object JITCore::create_vec8i_callable_2(uint64_t func_ptr)
+    {
+        auto fn_ptr = reinterpret_cast<void (*)(int32_t*, int32_t*, int32_t*)>(func_ptr);
+        return nb::cpp_function([fn_ptr](nb::object a_obj, nb::object b_obj) -> nb::object {
+            alignas(32) int32_t a_buf[8] = {};
+            alignas(32) int32_t b_buf[8] = {};
+            alignas(32) int32_t out_buf[8] = {};
+            
+            if (nb::hasattr(a_obj, "ctypes")) {
+                nb::object ctypes_a = a_obj.attr("ctypes");
+                nb::object data_a = ctypes_a.attr("data");
+                int32_t* ptr_a = reinterpret_cast<int32_t*>(nb::cast<uintptr_t>(data_a));
+                for (int i = 0; i < 8; ++i) a_buf[i] = ptr_a[i];
+            }
+            if (nb::hasattr(b_obj, "ctypes")) {
+                nb::object ctypes_b = b_obj.attr("ctypes");
+                nb::object data_b = ctypes_b.attr("data");
+                int32_t* ptr_b = reinterpret_cast<int32_t*>(nb::cast<uintptr_t>(data_b));
+                for (int i = 0; i < 8; ++i) b_buf[i] = ptr_b[i];
+            }
+            
+            fn_ptr(out_buf, a_buf, b_buf);
+            
+            nb::list ret;
+            for (int i = 0; i < 8; ++i) ret.append(out_buf[i]);
+            return ret;
+        });
+    }
+
+    nb::object JITCore::get_vec8i_callable(const std::string &name, int param_count)
+    {
+        uint64_t func_ptr = lookup_symbol(name);
+        if (!func_ptr)
+            throw std::runtime_error("Failed to find JIT function: " + name);
+
+        switch (param_count)
+        {
+        case 2:
+            return create_vec8i_callable_2(func_ptr);
+        default:
+            throw std::runtime_error("Vec8i mode supports 2 parameters");
         }
     }
 
@@ -7518,20 +8124,203 @@ namespace justjit
             builder.CreateStore(&*args++, local_allocas[i]);
         }
 
-        // First pass: Check for unsupported opcodes and create basic blocks for jump targets
-        // Integer mode doesn't support Python object operations like FOR_ITER, CALL, etc.
+        // First pass: Detect range() loop patterns and check for unsupported opcodes
+        // A range loop pattern looks like:
+        //   PUSH_NULL (optional in some cases)
+        //   LOAD_GLOBAL (range)
+        //   LOAD_CONST or LOAD_FAST (stop value)
+        //   [LOAD_CONST or LOAD_FAST (start value) - optional for range(start, stop)]
+        //   [LOAD_CONST or LOAD_FAST (step value) - optional for range(start, stop, step)]
+        //   CALL
+        //   GET_ITER
+        //   FOR_ITER (loop body follows)
+        //   ...
+        //   END_FOR
+        
+        // Track offsets that are part of range loop patterns (allowed in int mode)
+        std::unordered_set<int> range_loop_offsets;
+        
+        // Structure to track detected range loops
+        struct RangeLoop {
+            int for_iter_idx;      // Index of FOR_ITER instruction
+            int end_for_idx;       // Index of END_FOR instruction
+            int loop_var_idx;      // Local variable index for loop counter
+            int start_const_idx;   // Constant index for start value (-1 if from LOAD_FAST)
+            int stop_const_idx;    // Constant index for stop value (-1 if from LOAD_FAST)
+            int start_local_idx;   // Local variable index for start (-1 if from constant)
+            int stop_local_idx;    // Local variable index for stop (-1 if from constant)
+            bool valid;
+        };
+        std::vector<RangeLoop> detected_range_loops;
+        
+        // Scan for range() patterns
+        for (size_t i = 0; i < instructions.size(); ++i)
+        {
+            // Look for GET_ITER followed by FOR_ITER pattern
+            if (instructions[i].opcode == op::GET_ITER && 
+                i + 1 < instructions.size() && 
+                instructions[i + 1].opcode == op::FOR_ITER)
+            {
+                // Found potential range loop - trace back to find CALL and LOAD_GLOBAL
+                // Pattern: PUSH_NULL, LOAD_GLOBAL(range), LOAD_CONST/FAST, CALL, GET_ITER, FOR_ITER
+                size_t call_idx = i - 1; // CALL should be right before GET_ITER
+                
+                if (call_idx < instructions.size() && instructions[call_idx].opcode == op::CALL)
+                {
+                    int arg_count = instructions[call_idx].arg; // Number of args to range()
+                    
+                    // Python 3.13 can have either:
+                    // 1. PUSH_NULL, LOAD_GLOBAL, [args...], CALL (separate opcodes)
+                    // 2. LOAD_GLOBAL (with NULL flag), [args...], CALL (combined)
+                    // The LOAD_GLOBAL arg encodes: (name_idx << 1) | push_null_flag
+                    // So arg & 1 == 1 means NULL is pushed along with LOAD_GLOBAL
+                    
+                    size_t first_arg_idx = call_idx - arg_count;
+                    size_t load_global_idx = first_arg_idx - 1;
+                    
+                    bool has_separate_push_null = false;
+                    size_t push_null_idx = load_global_idx; // May not exist
+                    
+                    if (load_global_idx < instructions.size() &&
+                        instructions[load_global_idx].opcode == op::LOAD_GLOBAL)
+                    {
+                        // Check if LOAD_GLOBAL has combined NULL flag (arg & 1 == 1)
+                        bool combined_null = (instructions[load_global_idx].arg & 1) == 1;
+                        
+                        if (!combined_null && load_global_idx > 0)
+                        {
+                            // Check for separate PUSH_NULL before LOAD_GLOBAL
+                            push_null_idx = load_global_idx - 1;
+                            if (push_null_idx < instructions.size() &&
+                                instructions[push_null_idx].opcode == op::PUSH_NULL)
+                            {
+                                has_separate_push_null = true;
+                            }
+                        }
+                        
+                        // Valid range pattern if we have combined NULL or separate PUSH_NULL
+                        if (combined_null || has_separate_push_null)
+                        {
+                            // Mark these offsets as allowed for int mode
+                            if (has_separate_push_null)
+                            {
+                                range_loop_offsets.insert(instructions[push_null_idx].offset);
+                            }
+                            range_loop_offsets.insert(instructions[load_global_idx].offset);
+                            for (size_t j = first_arg_idx; j <= call_idx; ++j)
+                            {
+                                range_loop_offsets.insert(instructions[j].offset);
+                            }
+                            range_loop_offsets.insert(instructions[i].offset);     // GET_ITER
+                            range_loop_offsets.insert(instructions[i + 1].offset); // FOR_ITER
+                            
+                            // Find END_FOR
+                            int for_iter_target = instructions[i + 1].argval;
+                            size_t end_for_idx = i + 2;
+                            for (size_t j = i + 2; j < instructions.size(); ++j)
+                            {
+                                if (instructions[j].opcode == op::END_FOR &&
+                                    instructions[j].offset >= for_iter_target - 4) // END_FOR is near target
+                                {
+                                    end_for_idx = j;
+                                    range_loop_offsets.insert(instructions[j].offset);
+                                    break;
+                                }
+                            }
+                            
+                            // Also mark POP_TOP after END_FOR if present
+                            if (end_for_idx + 1 < instructions.size() &&
+                                instructions[end_for_idx + 1].opcode == op::POP_TOP)
+                            {
+                                range_loop_offsets.insert(instructions[end_for_idx + 1].offset);
+                            }
+                            
+                            // Record the range loop info
+                            RangeLoop rl;
+                            rl.for_iter_idx = i + 1;
+                            rl.end_for_idx = end_for_idx;
+                            rl.loop_var_idx = -1;
+                            rl.valid = true;
+                            
+                            // Determine start/stop from arguments
+                            if (arg_count == 1)
+                            {
+                                // range(stop) - start is 0
+                                rl.start_const_idx = -2; // Special: literal 0
+                                if (instructions[first_arg_idx].opcode == op::LOAD_CONST)
+                                {
+                                    rl.stop_const_idx = instructions[first_arg_idx].arg;
+                                    rl.stop_local_idx = -1;
+                                }
+                                else if (instructions[first_arg_idx].opcode == op::LOAD_FAST)
+                                {
+                                    rl.stop_const_idx = -1;
+                                    rl.stop_local_idx = instructions[first_arg_idx].arg;
+                                }
+                                rl.start_local_idx = -1;
+                            }
+                            else if (arg_count >= 2)
+                            {
+                                // range(start, stop)
+                                if (instructions[first_arg_idx].opcode == op::LOAD_CONST)
+                                {
+                                    rl.start_const_idx = instructions[first_arg_idx].arg;
+                                    rl.start_local_idx = -1;
+                                }
+                                else
+                                {
+                                    rl.start_const_idx = -1;
+                                    rl.start_local_idx = instructions[first_arg_idx].arg;
+                                }
+                                if (instructions[first_arg_idx + 1].opcode == op::LOAD_CONST)
+                                {
+                                    rl.stop_const_idx = instructions[first_arg_idx + 1].arg;
+                                    rl.stop_local_idx = -1;
+                                }
+                                else
+                                {
+                                    rl.stop_const_idx = -1;
+                                    rl.stop_local_idx = instructions[first_arg_idx + 1].arg;
+                                }
+                            }
+                            
+                            detected_range_loops.push_back(rl);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Extended supported opcodes for int mode (including range loop opcodes)
         static const std::unordered_set<uint8_t> supported_int_opcodes = {
             op::RESUME, op::LOAD_FAST, op::LOAD_FAST_LOAD_FAST, op::LOAD_CONST,
             op::STORE_FAST, op::BINARY_OP, op::UNARY_NEGATIVE, op::COMPARE_OP,
             op::POP_JUMP_IF_FALSE, op::POP_JUMP_IF_TRUE, op::RETURN_VALUE, op::RETURN_CONST,
             op::POP_TOP, op::JUMP_BACKWARD, op::JUMP_FORWARD, op::COPY,
-            op::NOP, op::CACHE
+            op::NOP, op::CACHE,
+            // Range loop opcodes (only valid within detected range patterns)
+            op::PUSH_NULL, op::LOAD_GLOBAL, op::CALL, op::GET_ITER, op::FOR_ITER, op::END_FOR
         };
         
         for (size_t i = 0; i < instructions.size(); ++i)
         {
             const auto &instr = instructions[i];
-            if (supported_int_opcodes.find(instr.opcode) == supported_int_opcodes.end())
+            bool is_supported = supported_int_opcodes.find(instr.opcode) != supported_int_opcodes.end();
+            
+            // For range-related opcodes, check if they're part of a detected range pattern
+            if (is_supported && (instr.opcode == op::PUSH_NULL || instr.opcode == op::LOAD_GLOBAL ||
+                instr.opcode == op::CALL || instr.opcode == op::GET_ITER || 
+                instr.opcode == op::FOR_ITER || instr.opcode == op::END_FOR))
+            {
+                if (range_loop_offsets.find(instr.offset) == range_loop_offsets.end())
+                {
+                    // These opcodes are not part of a range pattern - unsupported
+                    llvm::errs() << "Integer mode: opcode " << static_cast<int>(instr.opcode) 
+                                 << " at offset " << instr.offset << " is not part of a range() pattern. Use mode='generic' or mode='auto'.\n";
+                    return false;
+                }
+            }
+            else if (!is_supported)
             {
                 // Unsupported opcode for integer mode
                 llvm::errs() << "Integer mode: unsupported opcode " << static_cast<int>(instr.opcode) 
@@ -7556,7 +8345,22 @@ namespace justjit
             else if (instr.opcode == op::JUMP_BACKWARD)
             {
                 int target_offset = instr.argval;
-                if (!jump_targets.count(target_offset))
+                
+                // Check if this JUMP_BACKWARD targets a range loop FOR_ITER
+                // If so, skip creating a block (we create range_header_X instead)
+                bool is_range_target = false;
+                for (const auto& rl : detected_range_loops)
+                {
+                    if (rl.for_iter_idx < static_cast<int>(instructions.size()) &&
+                        instructions[rl.for_iter_idx].offset == target_offset)
+                    {
+                        is_range_target = true;
+                        break;
+                    }
+                }
+                
+                // Only create block for non-range while loops
+                if (!is_range_target && !jump_targets.count(target_offset))
                 {
                     jump_targets[target_offset] = llvm::BasicBlock::Create(
                         *local_context, "loop_header_" + std::to_string(target_offset), func);
@@ -7883,19 +8687,77 @@ namespace justjit
             {
                 // Jump back to loop header
                 int target_offset = instr.argval;
-                if (!jump_targets.count(target_offset))
+                
+                // Check if this JUMP_BACKWARD is for a range loop
+                // If so, increment the range counter before jumping
+                bool is_range_loop = false;
+                int range_for_iter_idx = -1;
+                
+                for (const auto& rl : detected_range_loops)
                 {
-                    jump_targets[target_offset] = llvm::BasicBlock::Create(
-                        *local_context, "loop_header_" + std::to_string(target_offset), func);
+                    // If the for_iter_idx's offset matches the target, this is a range loop
+                    if (rl.for_iter_idx < static_cast<int>(instructions.size()) &&
+                        instructions[rl.for_iter_idx].offset == target_offset)
+                    {
+                        is_range_loop = true;
+                        range_for_iter_idx = rl.for_iter_idx;
+                        break;
+                    }
                 }
-                if (!builder.GetInsertBlock()->getTerminator())
+                
+                if (is_range_loop && range_for_iter_idx >= 0)
                 {
-                    builder.CreateBr(jump_targets[target_offset]);
+                    // This is a range loop - increment counter and jump to our native header
+                    int loop_counter_idx = 10000 + range_for_iter_idx;
+                    
+                    if (local_allocas.count(loop_counter_idx))
+                    {
+                        // Increment the loop counter
+                        llvm::Value* counter_val = builder.CreateLoad(i64_type, local_allocas[loop_counter_idx], "counter_inc");
+                        llvm::Value* next_val = builder.CreateAdd(counter_val, llvm::ConstantInt::get(i64_type, 1), "counter_next");
+                        builder.CreateStore(next_val, local_allocas[loop_counter_idx]);
+                        
+                        // Jump to our native range_header block
+                        if (!builder.GetInsertBlock()->getTerminator())
+                        {
+                            llvm::BasicBlock* loop_header = nullptr;
+                            std::string expected_name = "range_header_" + std::to_string(range_for_iter_idx);
+                            
+                            for (auto& BB : *func)
+                            {
+                                if (BB.getName().starts_with(expected_name))
+                                {
+                                    loop_header = &BB;
+                                    break;
+                                }
+                            }
+                            if (loop_header)
+                            {
+                                builder.CreateBr(loop_header);
+                            }
+                        }
+                    }
+                    // Note: No after_loop block needed for range loops
+                    // Control flow goes: loop_body -> increment -> range_header -> (body or exit)
                 }
-                // Create a new block for any code after the loop (unreachable but needed)
-                llvm::BasicBlock *after_loop = llvm::BasicBlock::Create(
-                    *local_context, "after_loop_" + std::to_string(i), func);
-                builder.SetInsertPoint(after_loop);
+                else
+                {
+                    // Normal while loop - just jump
+                    if (!jump_targets.count(target_offset))
+                    {
+                        jump_targets[target_offset] = llvm::BasicBlock::Create(
+                            *local_context, "loop_header_" + std::to_string(target_offset), func);
+                    }
+                    if (!builder.GetInsertBlock()->getTerminator())
+                    {
+                        builder.CreateBr(jump_targets[target_offset]);
+                    }
+                    
+                    // Create a new block for any code after the while loop (unreachable but needed for CFG)
+                    llvm::BasicBlock *after_loop = llvm::BasicBlock::Create(
+                        *local_context, "after_loop_" + std::to_string(i), func);
+                    builder.SetInsertPoint(after_loop);
+                }
             }
             else if (instr.opcode == op::JUMP_FORWARD)
             {
@@ -7915,12 +8777,918 @@ namespace justjit
                     *local_context, "after_jump_" + std::to_string(i), func);
                 builder.SetInsertPoint(after_jump);
             }
+            // ========== Native Range Loop Opcodes ==========
+            // These opcodes are part of detected range() patterns and generate native LLVM loops
+            else if (instr.opcode == op::PUSH_NULL || instr.opcode == op::LOAD_GLOBAL)
+            {
+                // Skip - these are part of range() call setup
+                // The range() call is handled specially in FOR_ITER
+                continue;
+            }
+            else if (instr.opcode == op::CALL)
+            {
+                // Skip - range() call is handled in FOR_ITER
+                // Pop the arguments and callable from the conceptual stack
+                // (they were never actually pushed in native mode)
+                continue;
+            }
+            else if (instr.opcode == op::GET_ITER)
+            {
+                // Skip - iterator creation is handled in FOR_ITER
+                continue;
+            }
+            else if (instr.opcode == op::FOR_ITER)
+            {
+                // Native range loop implementation
+                // Find the corresponding RangeLoop info we detected earlier
+                const RangeLoop* rl_ptr = nullptr;
+                for (const auto& rl : detected_range_loops)
+                {
+                    if (rl.for_iter_idx == static_cast<int>(i))
+                    {
+                        rl_ptr = &rl;
+                        break;
+                    }
+                }
+                
+                if (!rl_ptr)
+                {
+                    llvm::errs() << "Integer mode: FOR_ITER at " << i << " not in detected range loops\n";
+                    return false;
+                }
+                
+                // Get loop bounds
+                llvm::Value* start_val = nullptr;
+                llvm::Value* stop_val = nullptr;
+                
+                if (rl_ptr->start_const_idx == -2)
+                {
+                    // Literal 0 for range(stop)
+                    start_val = llvm::ConstantInt::get(i64_type, 0);
+                }
+                else if (rl_ptr->start_const_idx >= 0 && static_cast<size_t>(rl_ptr->start_const_idx) < int_constants.size())
+                {
+                    start_val = llvm::ConstantInt::get(i64_type, int_constants[rl_ptr->start_const_idx]);
+                }
+                else if (rl_ptr->start_local_idx >= 0 && local_allocas.count(rl_ptr->start_local_idx))
+                {
+                    start_val = builder.CreateLoad(i64_type, local_allocas[rl_ptr->start_local_idx], "range_start");
+                }
+                else
+                {
+                    start_val = llvm::ConstantInt::get(i64_type, 0);
+                }
+                
+                if (rl_ptr->stop_const_idx >= 0 && static_cast<size_t>(rl_ptr->stop_const_idx) < int_constants.size())
+                {
+                    stop_val = llvm::ConstantInt::get(i64_type, int_constants[rl_ptr->stop_const_idx]);
+                }
+                else if (rl_ptr->stop_local_idx >= 0 && local_allocas.count(rl_ptr->stop_local_idx))
+                {
+                    stop_val = builder.CreateLoad(i64_type, local_allocas[rl_ptr->stop_local_idx], "range_stop");
+                }
+                else
+                {
+                    llvm::errs() << "Integer mode: Cannot determine range stop value\n";
+                    return false;
+                }
+                
+                // Create loop structure:
+                // entry -> loop_header -> (loop_body or loop_exit)
+                // loop_body -> ... -> loop_latch -> loop_header
+                
+                int for_iter_target = instr.argval; // END_FOR offset
+                
+                // Save current insert point
+                llvm::BasicBlock* current_block = builder.GetInsertBlock();
+                llvm::BasicBlock::iterator current_point = builder.GetInsertPoint();
+                
+                // Create allocas at the entry block (after existing allocas)
+                builder.SetInsertPoint(&func->getEntryBlock(), func->getEntryBlock().getFirstInsertionPt());
+                
+                llvm::AllocaInst* loop_counter = builder.CreateAlloca(
+                    i64_type, nullptr, "range_counter_" + std::to_string(i));
+                llvm::AllocaInst* stop_alloca = builder.CreateAlloca(
+                    i64_type, nullptr, "range_stop_" + std::to_string(i));
+                
+                // Restore insert point
+                builder.SetInsertPoint(current_block, current_point);
+                
+                llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(
+                    *local_context, "range_header_" + std::to_string(i), func);
+                llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(
+                    *local_context, "range_body_" + std::to_string(i), func);
+                llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(
+                    *local_context, "range_exit_" + std::to_string(i), func);
+                
+                // Register the exit block for END_FOR target
+                jump_targets[for_iter_target] = loop_exit;
+                
+                // Initialize counter to start value and store stop value
+                builder.CreateStore(start_val, loop_counter);
+                builder.CreateStore(stop_val, stop_alloca);
+                builder.CreateBr(loop_header);
+                
+                // Loop header: check if counter < stop
+                builder.SetInsertPoint(loop_header);
+                llvm::Value* header_counter = builder.CreateLoad(i64_type, loop_counter, "counter");
+                llvm::Value* header_stop = builder.CreateLoad(i64_type, stop_alloca, "stop_val");
+                llvm::Value* cmp = builder.CreateICmpSLT(header_counter, header_stop, "range_cond");
+                builder.CreateCondBr(cmp, loop_body, loop_exit);
+                
+                // Loop body: load current counter value and push to stack
+                builder.SetInsertPoint(loop_body);
+                llvm::Value* body_counter = builder.CreateLoad(i64_type, loop_counter, "loop_var");
+                stack.push_back(body_counter);
+                
+                // Store the loop counter alloca for END_FOR to increment
+                // We use a map from FOR_ITER index to the alloca
+                // For simplicity, store in local_allocas with a special index
+                int loop_counter_idx = 10000 + static_cast<int>(i); // Use high index to avoid conflicts
+                local_allocas[loop_counter_idx] = loop_counter;
+                
+                // Mark which instruction index has the loop exit target
+                // so JUMP_BACKWARD can find the right increment
+                continue; // Let the loop body execute naturally
+            }
+            else if (instr.opcode == op::END_FOR)
+            {
+                // END_FOR is the exit point of the loop - reached when iterator is exhausted
+                // The loop back happens via JUMP_BACKWARD, not END_FOR
+                // We just need to switch to the loop exit block which was already created by FOR_ITER
+                
+                // Find the corresponding FOR_ITER to get the exit block
+                int for_iter_idx = -1;
+                for (const auto& rl : detected_range_loops)
+                {
+                    if (rl.end_for_idx == static_cast<int>(i))
+                    {
+                        for_iter_idx = rl.for_iter_idx;
+                        break;
+                    }
+                }
+                
+                if (for_iter_idx >= 0)
+                {
+                    // Find and switch to the loop exit block
+                    llvm::BasicBlock* loop_exit = nullptr;
+                    std::string exit_name = "range_exit_" + std::to_string(for_iter_idx);
+                    for (auto& BB : *func)
+                    {
+                        if (BB.getName().starts_with(exit_name))
+                        {
+                            loop_exit = &BB;
+                            break;
+                        }
+                    }
+                    if (loop_exit)
+                    {
+                        // Just set the insert point to the exit block
+                        // The FOR_ITER condBr already branches here when counter >= stop
+                        builder.SetInsertPoint(loop_exit);
+                    }
+                }
+                // Continue to next instruction - code generation will resume in the exit block
+            }
         }
 
         // Ensure function has a return
         if (!builder.GetInsertBlock()->getTerminator())
         {
             builder.CreateRet(llvm::ConstantInt::get(i64_type, 0));
+        }
+        // Capture IR if dump_ir is enabled
+        if (dump_ir)
+        {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+        
+        // Optimize
+        optimize_module(*module, func);
+
+        // Add to JIT
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err)
+        {
+            llvm::errs() << "Failed to add module: " << toString(std::move(err)) << "\n";
+            return false;
+        }
+
+        // Mark as compiled to prevent duplicate symbol errors on subsequent calls
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Float Mode Compilation
+    // =========================================================================
+    // Compiles a function that uses only native f64 (double) types.
+    // Parameters and return value are all double. No Python object overhead.
+    // =========================================================================
+    bool JITCore::compile_float_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit)
+        {
+            return false;
+        }
+
+        // Check if already compiled to prevent duplicate symbol errors
+        if (compiled_functions.count(name) > 0)
+        {
+            return true; // Already compiled, return success
+        }
+
+        // Convert Python instructions list to C++ vector
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i)
+        {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        // Extract float constants
+        std::vector<double> float_constants;
+        for (size_t i = 0; i < py_constants.size(); ++i)
+        {
+            nb::object const_obj = py_constants[i];
+            if (nb::isinstance<nb::float_>(const_obj))
+            {
+                float_constants.push_back(nb::cast<double>(const_obj));
+            }
+            else if (nb::isinstance<nb::int_>(const_obj))
+            {
+                // Allow int constants in float mode (promote to double)
+                float_constants.push_back(static_cast<double>(nb::cast<int64_t>(const_obj)));
+            }
+            else
+            {
+                float_constants.push_back(0.0); // Non-numeric constants default to 0.0
+            }
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        llvm::Type *f64_type = llvm::Type::getDoubleTy(*local_context);
+
+        // Create function type - all double for float mode
+        std::vector<llvm::Type *> param_types(param_count, f64_type);
+        llvm::FunctionType *func_type = llvm::FunctionType::get(
+            f64_type, // Return double
+            param_types,
+            false);
+
+        llvm::Function *func = llvm::Function::Create(
+            func_type,
+            llvm::Function::ExternalLinkage,
+            name,
+            module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        // Create stack for values
+        std::vector<llvm::Value *> stack;
+
+        // Create allocas for local variables (all double)
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        for (int i = 0; i < total_locals; ++i)
+        {
+            local_allocas[i] = builder.CreateAlloca(f64_type, nullptr, "local_" + std::to_string(i));
+        }
+
+        // Store parameters in local variables
+        int arg_idx = 0;
+        for (auto &arg : func->args())
+        {
+            builder.CreateStore(&arg, local_allocas[arg_idx]);
+            ++arg_idx;
+        }
+
+        // =========================================================================
+        // Range Loop Detection for Float Mode
+        // Detect pattern: PUSH_NULL, LOAD_GLOBAL(range), args, CALL, GET_ITER, FOR_ITER
+        // =========================================================================
+        struct RangeLoop {
+            int for_iter_idx;
+            int end_for_idx;
+            int arg_count;
+        };
+        std::vector<RangeLoop> detected_range_loops;
+        std::unordered_set<int> range_loop_offsets;
+        
+        for (size_t i = 0; i + 1 < instructions.size(); ++i)
+        {
+            if (instructions[i].opcode == op::GET_ITER &&
+                instructions[i + 1].opcode == op::FOR_ITER)
+            {
+                size_t call_idx = i - 1;
+                
+                if (call_idx < instructions.size() && instructions[call_idx].opcode == op::CALL)
+                {
+                    int arg_count = instructions[call_idx].arg;
+                    
+                    size_t first_arg_idx = call_idx - arg_count;
+                    size_t load_global_idx = first_arg_idx - 1;
+                    
+                    bool has_separate_push_null = false;
+                    size_t push_null_idx = load_global_idx;
+                    
+                    if (load_global_idx < instructions.size() &&
+                        instructions[load_global_idx].opcode == op::LOAD_GLOBAL)
+                    {
+                        bool combined_null = (instructions[load_global_idx].arg & 1) == 1;
+                        
+                        if (!combined_null && load_global_idx > 0)
+                        {
+                            push_null_idx = load_global_idx - 1;
+                            if (push_null_idx < instructions.size() &&
+                                instructions[push_null_idx].opcode == op::PUSH_NULL)
+                            {
+                                has_separate_push_null = true;
+                            }
+                        }
+                        
+                        if (combined_null || has_separate_push_null)
+                        {
+                            // Mark offsets as valid
+                            if (has_separate_push_null)
+                            {
+                                range_loop_offsets.insert(instructions[push_null_idx].offset);
+                            }
+                            range_loop_offsets.insert(instructions[load_global_idx].offset);
+                            for (size_t j = first_arg_idx; j <= call_idx; ++j)
+                            {
+                                range_loop_offsets.insert(instructions[j].offset);
+                            }
+                            range_loop_offsets.insert(instructions[i].offset);     // GET_ITER
+                            range_loop_offsets.insert(instructions[i + 1].offset); // FOR_ITER
+                            
+                            // Find END_FOR
+                            int for_iter_target = instructions[i + 1].argval;
+                            for (size_t j = i + 2; j < instructions.size(); ++j)
+                            {
+                                if (instructions[j].opcode == op::END_FOR &&
+                                    instructions[j].offset >= for_iter_target - 4)
+                                {
+                                    range_loop_offsets.insert(instructions[j].offset);
+                                    
+                                    RangeLoop rl;
+                                    rl.for_iter_idx = static_cast<int>(i + 1);
+                                    rl.end_for_idx = static_cast<int>(j);
+                                    rl.arg_count = arg_count;
+                                    detected_range_loops.push_back(rl);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Jump targets for control flow
+        std::unordered_map<int, llvm::BasicBlock *> jump_targets;
+        jump_targets[0] = entry;
+
+        // First pass: Create basic blocks for jump targets
+        for (size_t i = 0; i < instructions.size(); ++i)
+        {
+            const auto &instr = instructions[i];
+            if (instr.opcode == op::POP_JUMP_IF_FALSE || instr.opcode == op::POP_JUMP_IF_TRUE)
+            {
+                int target_offset = instr.argval;
+                if (!jump_targets.count(target_offset))
+                {
+                    jump_targets[target_offset] = llvm::BasicBlock::Create(
+                        *local_context, "block_" + std::to_string(target_offset), func);
+                }
+            }
+            else if (instr.opcode == op::JUMP_BACKWARD)
+            {
+                int target_offset = instr.argval;
+                
+                // Skip creating block for range loop targets (we create range_header_X instead)
+                bool is_range_target = false;
+                for (const auto& rl : detected_range_loops)
+                {
+                    if (rl.for_iter_idx < static_cast<int>(instructions.size()) &&
+                        instructions[rl.for_iter_idx].offset == target_offset)
+                    {
+                        is_range_target = true;
+                        break;
+                    }
+                }
+                
+                if (!is_range_target && !jump_targets.count(target_offset))
+                {
+                    jump_targets[target_offset] = llvm::BasicBlock::Create(
+                        *local_context, "loop_header_" + std::to_string(target_offset), func);
+                }
+            }
+            else if (instr.opcode == op::JUMP_FORWARD)
+            {
+                int target_offset = instr.argval;
+                if (!jump_targets.count(target_offset))
+                {
+                    jump_targets[target_offset] = llvm::BasicBlock::Create(
+                        *local_context, "forward_" + std::to_string(target_offset), func);
+                }
+            }
+        }
+
+        // Supported opcodes for float mode
+        std::unordered_set<uint16_t> supported_float_opcodes = {
+            op::RESUME, op::LOAD_FAST, op::LOAD_FAST_LOAD_FAST, op::LOAD_CONST,
+            op::STORE_FAST, op::BINARY_OP, op::UNARY_NEGATIVE, op::COMPARE_OP,
+            op::POP_JUMP_IF_FALSE, op::POP_JUMP_IF_TRUE, op::RETURN_VALUE, op::RETURN_CONST,
+            op::POP_TOP, op::JUMP_BACKWARD, op::JUMP_FORWARD, op::COPY,
+            op::NOP, op::CACHE,
+            // Range loop opcodes (only valid within detected range patterns)
+            op::PUSH_NULL, op::LOAD_GLOBAL, op::CALL, op::GET_ITER, op::FOR_ITER, op::END_FOR
+        };
+
+        // Validate all opcodes are supported
+        for (size_t i = 0; i < instructions.size(); ++i)
+        {
+            const auto &instr = instructions[i];
+            bool is_supported = supported_float_opcodes.find(instr.opcode) != supported_float_opcodes.end();
+            
+            // For range-related opcodes, check if they're part of a detected range pattern
+            if (is_supported && (instr.opcode == op::PUSH_NULL || instr.opcode == op::LOAD_GLOBAL ||
+                instr.opcode == op::CALL || instr.opcode == op::GET_ITER || 
+                instr.opcode == op::FOR_ITER || instr.opcode == op::END_FOR))
+            {
+                if (range_loop_offsets.find(instr.offset) == range_loop_offsets.end())
+                {
+                    llvm::errs() << "Float mode: opcode " << static_cast<int>(instr.opcode) 
+                                 << " at offset " << instr.offset << " is not part of a range() pattern. Use mode='auto' or mode='object'.\n";
+                    return false;
+                }
+            }
+            else if (!is_supported)
+            {
+                llvm::errs() << "Float mode: unsupported opcode " << static_cast<int>(instr.opcode)
+                             << " at offset " << instr.offset << ". Use mode='auto' or mode='object'.\n";
+                return false;
+            }
+        }
+
+        // Second pass: Generate code
+        for (size_t i = 0; i < instructions.size(); ++i)
+        {
+            const auto &instr = instructions[i];
+
+            // Check if we need to insert at a jump target block
+            if (jump_targets.count(instr.offset) && jump_targets[instr.offset] != entry)
+            {
+                llvm::BasicBlock *target_block = jump_targets[instr.offset];
+                if (!builder.GetInsertBlock()->getTerminator())
+                {
+                    builder.CreateBr(target_block);
+                }
+                builder.SetInsertPoint(target_block);
+            }
+
+            if (instr.opcode == op::RESUME)
+            {
+                continue;
+            }
+            else if (instr.opcode == op::LOAD_FAST)
+            {
+                if (local_allocas.count(instr.arg))
+                {
+                    llvm::Value *loaded = builder.CreateLoad(f64_type, local_allocas[instr.arg], "load_" + std::to_string(instr.arg));
+                    stack.push_back(loaded);
+                }
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST)
+            {
+                int first_local = instr.arg >> 4;
+                int second_local = instr.arg & 0xF;
+                if (local_allocas.count(first_local))
+                {
+                    stack.push_back(builder.CreateLoad(f64_type, local_allocas[first_local], "load_" + std::to_string(first_local)));
+                }
+                if (local_allocas.count(second_local))
+                {
+                    stack.push_back(builder.CreateLoad(f64_type, local_allocas[second_local], "load_" + std::to_string(second_local)));
+                }
+            }
+            else if (instr.opcode == op::LOAD_CONST)
+            {
+                if (instr.arg < float_constants.size())
+                {
+                    llvm::Value *const_val = llvm::ConstantFP::get(f64_type, float_constants[instr.arg]);
+                    stack.push_back(const_val);
+                }
+            }
+            else if (instr.opcode == op::STORE_FAST)
+            {
+                if (!stack.empty() && local_allocas.count(instr.arg))
+                {
+                    llvm::Value *val = stack.back();
+                    stack.pop_back();
+                    builder.CreateStore(val, local_allocas[instr.arg]);
+                }
+            }
+            else if (instr.opcode == op::BINARY_OP)
+            {
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    llvm::Value *result = nullptr;
+
+                    switch (instr.arg)
+                    {
+                    case 0: // ADD
+                        result = builder.CreateFAdd(lhs, rhs, "fadd");
+                        break;
+                    case 10: // SUBTRACT
+                        result = builder.CreateFSub(lhs, rhs, "fsub");
+                        break;
+                    case 5: // MULTIPLY
+                        result = builder.CreateFMul(lhs, rhs, "fmul");
+                        break;
+                    case 11: // TRUE_DIVIDE
+                        result = builder.CreateFDiv(lhs, rhs, "fdiv");
+                        break;
+                    case 2: // FLOOR_DIVIDE
+                    {
+                        llvm::Value *div_result = builder.CreateFDiv(lhs, rhs, "fdiv_floor");
+                        // Call floor intrinsic
+                        llvm::Function *floor_fn = llvm::Intrinsic::getOrInsertDeclaration(module.get(), llvm::Intrinsic::floor, {f64_type});
+                        result = builder.CreateCall(floor_fn, {div_result}, "floor");
+                        break;
+                    }
+                    case 6: // REMAINDER
+                        result = builder.CreateFRem(lhs, rhs, "fmod");
+                        break;
+                    case 8: // POWER
+                    {
+                        llvm::Function *pow_fn = llvm::Intrinsic::getOrInsertDeclaration(module.get(), llvm::Intrinsic::pow, {f64_type});
+                        result = builder.CreateCall(pow_fn, {lhs, rhs}, "pow");
+                        break;
+                    }
+                    default:
+                        result = lhs; // Fallback
+                    }
+
+                    if (result)
+                    {
+                        stack.push_back(result);
+                    }
+                }
+            }
+            else if (instr.opcode == op::UNARY_NEGATIVE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *val = stack.back(); stack.pop_back();
+                    stack.push_back(builder.CreateFNeg(val, "neg"));
+                }
+            }
+            else if (instr.opcode == op::COMPARE_OP)
+            {
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    llvm::Value *cmp_result = nullptr;
+
+                    // Compare op mapping for float (Python 3.13 encoding: arg >> 5)
+                    switch (instr.arg >> 5)
+                    {
+                    case 0: // LT
+                        cmp_result = builder.CreateFCmpOLT(lhs, rhs, "flt");
+                        break;
+                    case 1: // LE
+                        cmp_result = builder.CreateFCmpOLE(lhs, rhs, "fle");
+                        break;
+                    case 2: // EQ
+                        cmp_result = builder.CreateFCmpOEQ(lhs, rhs, "feq");
+                        break;
+                    case 3: // NE
+                        cmp_result = builder.CreateFCmpONE(lhs, rhs, "fne");
+                        break;
+                    case 4: // GT
+                        cmp_result = builder.CreateFCmpOGT(lhs, rhs, "fgt");
+                        break;
+                    case 5: // GE
+                        cmp_result = builder.CreateFCmpOGE(lhs, rhs, "fge");
+                        break;
+                    default:
+                        cmp_result = builder.CreateFCmpOLT(lhs, rhs, "fcmp");
+                    }
+
+                    // Convert i1 to f64 (0.0 or 1.0) for stack consistency
+                    llvm::Value *f64_result = builder.CreateUIToFP(cmp_result, f64_type, "cmp_f64");
+                    stack.push_back(f64_result);
+                }
+            }
+            else if (instr.opcode == op::POP_JUMP_IF_FALSE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *cond = stack.back(); stack.pop_back();
+                    // Convert f64 to bool (non-zero is true)
+                    llvm::Value *is_true = builder.CreateFCmpONE(cond, llvm::ConstantFP::get(f64_type, 0.0), "is_true");
+
+                    int target_offset = instr.argval;
+                    llvm::BasicBlock *true_block = llvm::BasicBlock::Create(*local_context, "true_" + std::to_string(i), func);
+                    llvm::BasicBlock *false_block = jump_targets.count(target_offset) ? jump_targets[target_offset] : entry;
+
+                    builder.CreateCondBr(is_true, true_block, false_block);
+                    builder.SetInsertPoint(true_block);
+                }
+            }
+            else if (instr.opcode == op::POP_JUMP_IF_TRUE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *cond = stack.back(); stack.pop_back();
+                    llvm::Value *is_true = builder.CreateFCmpONE(cond, llvm::ConstantFP::get(f64_type, 0.0), "is_true");
+
+                    int target_offset = instr.argval;
+                    llvm::BasicBlock *false_block = llvm::BasicBlock::Create(*local_context, "false_" + std::to_string(i), func);
+                    llvm::BasicBlock *true_block = jump_targets.count(target_offset) ? jump_targets[target_offset] : entry;
+
+                    builder.CreateCondBr(is_true, true_block, false_block);
+                    builder.SetInsertPoint(false_block);
+                }
+            }
+            else if (instr.opcode == op::JUMP_BACKWARD)
+            {
+                int target_offset = instr.argval;
+                
+                // Check if this JUMP_BACKWARD is for a range loop
+                bool is_range_loop = false;
+                int range_for_iter_idx = -1;
+                
+                for (const auto& rl : detected_range_loops)
+                {
+                    if (rl.for_iter_idx < static_cast<int>(instructions.size()) &&
+                        instructions[rl.for_iter_idx].offset == target_offset)
+                    {
+                        is_range_loop = true;
+                        range_for_iter_idx = rl.for_iter_idx;
+                        break;
+                    }
+                }
+                
+                if (is_range_loop && range_for_iter_idx >= 0)
+                {
+                    // Range loop - increment counter and jump to our native header
+                    int loop_counter_idx = 10000 + range_for_iter_idx;
+                    
+                    if (local_allocas.count(loop_counter_idx))
+                    {
+                        // Increment the loop counter (as f64)
+                        llvm::Value* counter_val = builder.CreateLoad(f64_type, local_allocas[loop_counter_idx], "counter_inc");
+                        llvm::Value* next_val = builder.CreateFAdd(counter_val, llvm::ConstantFP::get(f64_type, 1.0), "counter_next");
+                        builder.CreateStore(next_val, local_allocas[loop_counter_idx]);
+                        
+                        // Jump to native range_header block
+                        if (!builder.GetInsertBlock()->getTerminator())
+                        {
+                            llvm::BasicBlock* loop_header = nullptr;
+                            std::string expected_name = "range_header_" + std::to_string(range_for_iter_idx);
+                            
+                            for (auto& BB : *func)
+                            {
+                                if (BB.getName().starts_with(expected_name))
+                                {
+                                    loop_header = &BB;
+                                    break;
+                                }
+                            }
+                            if (loop_header)
+                            {
+                                builder.CreateBr(loop_header);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Normal while loop
+                    if (!jump_targets.count(target_offset))
+                    {
+                        jump_targets[target_offset] = llvm::BasicBlock::Create(
+                            *local_context, "loop_header_" + std::to_string(target_offset), func);
+                    }
+                    if (!builder.GetInsertBlock()->getTerminator())
+                    {
+                        builder.CreateBr(jump_targets[target_offset]);
+                    }
+                    
+                    llvm::BasicBlock *after_loop = llvm::BasicBlock::Create(
+                        *local_context, "after_loop_" + std::to_string(i), func);
+                    builder.SetInsertPoint(after_loop);
+                }
+            }
+            else if (instr.opcode == op::JUMP_FORWARD)
+            {
+                int target_offset = instr.argval;
+                if (!jump_targets.count(target_offset))
+                {
+                    jump_targets[target_offset] = llvm::BasicBlock::Create(
+                        *local_context, "forward_" + std::to_string(target_offset), func);
+                }
+                if (!builder.GetInsertBlock()->getTerminator())
+                {
+                    builder.CreateBr(jump_targets[target_offset]);
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *ret = stack.back();
+                    builder.CreateRet(ret);
+                }
+                else
+                {
+                    builder.CreateRet(llvm::ConstantFP::get(f64_type, 0.0));
+                }
+            }
+            else if (instr.opcode == op::RETURN_CONST)
+            {
+                if (instr.arg < float_constants.size())
+                {
+                    builder.CreateRet(llvm::ConstantFP::get(f64_type, float_constants[instr.arg]));
+                }
+                else
+                {
+                    builder.CreateRet(llvm::ConstantFP::get(f64_type, 0.0));
+                }
+            }
+            else if (instr.opcode == op::POP_TOP)
+            {
+                if (!stack.empty())
+                {
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::COPY)
+            {
+                if (instr.arg <= stack.size())
+                {
+                    stack.push_back(stack[stack.size() - instr.arg]);
+                }
+            }
+            // Range loop opcodes - handled natively for performance
+            else if (instr.opcode == op::PUSH_NULL || instr.opcode == op::LOAD_GLOBAL ||
+                     instr.opcode == op::CALL || instr.opcode == op::GET_ITER)
+            {
+                // Skip these - they're part of range() setup, handled by FOR_ITER
+                continue;
+            }
+            else if (instr.opcode == op::FOR_ITER)
+            {
+                // Find the matching range loop info
+                int current_idx = static_cast<int>(i);
+                RangeLoop* current_rl = nullptr;
+                for (auto& rl : detected_range_loops)
+                {
+                    if (rl.for_iter_idx == current_idx)
+                    {
+                        current_rl = &rl;
+                        break;
+                    }
+                }
+                
+                if (!current_rl)
+                {
+                    llvm::errs() << "Float mode: FOR_ITER without detected range pattern\n";
+                    return false;
+                }
+                
+                // Get range arguments (currently only supports range(stop) or range(start, stop))
+                // For float mode, we store as f64
+                llvm::Value* start_val = llvm::ConstantFP::get(f64_type, 0.0);
+                llvm::Value* stop_val = nullptr;
+                
+                // Get stop value from stack (pushed by LOAD_CONST/LOAD_FAST before CALL)
+                if (!stack.empty())
+                {
+                    stop_val = stack.back();
+                    stack.pop_back();
+                    
+                    if (current_rl->arg_count == 2 && !stack.empty())
+                    {
+                        start_val = stop_val;
+                        stop_val = stack.back();
+                        stack.pop_back();
+                    }
+                }
+                else
+                {
+                    stop_val = llvm::ConstantFP::get(f64_type, 0.0);
+                }
+                
+                int for_iter_target = instr.argval;
+                
+                // Save insert point and create allocas at entry
+                llvm::BasicBlock* current_block = builder.GetInsertBlock();
+                llvm::BasicBlock::iterator current_point = builder.GetInsertPoint();
+                builder.SetInsertPoint(&func->getEntryBlock(), func->getEntryBlock().getFirstInsertionPt());
+                
+                llvm::AllocaInst* loop_counter = builder.CreateAlloca(
+                    f64_type, nullptr, "range_counter_" + std::to_string(i));
+                llvm::AllocaInst* stop_alloca = builder.CreateAlloca(
+                    f64_type, nullptr, "range_stop_" + std::to_string(i));
+                
+                builder.SetInsertPoint(current_block, current_point);
+                
+                // Create loop blocks
+                llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(
+                    *local_context, "range_header_" + std::to_string(i), func);
+                llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(
+                    *local_context, "range_body_" + std::to_string(i), func);
+                llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(
+                    *local_context, "range_exit_" + std::to_string(i), func);
+                
+                jump_targets[for_iter_target] = loop_exit;
+                
+                // Initialize counter and store stop value
+                builder.CreateStore(start_val, loop_counter);
+                builder.CreateStore(stop_val, stop_alloca);
+                builder.CreateBr(loop_header);
+                
+                // Loop header: check counter < stop
+                builder.SetInsertPoint(loop_header);
+                llvm::Value* header_counter = builder.CreateLoad(f64_type, loop_counter, "counter");
+                llvm::Value* header_stop = builder.CreateLoad(f64_type, stop_alloca, "stop_val");
+                llvm::Value* cmp = builder.CreateFCmpOLT(header_counter, header_stop, "range_cond");
+                builder.CreateCondBr(cmp, loop_body, loop_exit);
+                
+                // Loop body: load counter and push to stack
+                builder.SetInsertPoint(loop_body);
+                llvm::Value* body_counter = builder.CreateLoad(f64_type, loop_counter, "loop_var");
+                stack.push_back(body_counter);
+                
+                // Store loop counter alloca for JUMP_BACKWARD increment
+                int loop_counter_idx = 10000 + current_idx;
+                local_allocas[loop_counter_idx] = loop_counter;
+            }
+            else if (instr.opcode == op::END_FOR)
+            {
+                // Find corresponding FOR_ITER to get exit block
+                int for_iter_idx = -1;
+                for (const auto& rl : detected_range_loops)
+                {
+                    if (rl.end_for_idx == static_cast<int>(i))
+                    {
+                        for_iter_idx = rl.for_iter_idx;
+                        break;
+                    }
+                }
+                
+                if (for_iter_idx >= 0)
+                {
+                    // Switch to loop exit block
+                    llvm::BasicBlock* loop_exit = nullptr;
+                    std::string exit_name = "range_exit_" + std::to_string(for_iter_idx);
+                    for (auto& BB : *func)
+                    {
+                        if (BB.getName().starts_with(exit_name))
+                        {
+                            loop_exit = &BB;
+                            break;
+                        }
+                    }
+                    if (loop_exit)
+                    {
+                        builder.SetInsertPoint(loop_exit);
+                    }
+                }
+            }
+        }
+
+        // Ensure function has a return
+        if (!builder.GetInsertBlock()->getTerminator())
+        {
+            builder.CreateRet(llvm::ConstantFP::get(f64_type, 0.0));
+        }
+
+        // Capture IR if dump_ir is enabled
+        if (dump_ir)
+        {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
         }
 
         // Optimize
@@ -7935,6 +9703,1719 @@ namespace justjit
         }
 
         // Mark as compiled to prevent duplicate symbol errors on subsequent calls
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Bool Mode Compilation
+    // =========================================================================
+    // Compiles a function that uses only native boolean types.
+    // Parameters and return value are all i64 (0 = false, 1 = true).
+    // =========================================================================
+    bool JITCore::compile_bool_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit)
+        {
+            return false;
+        }
+
+        // Check if already compiled to prevent duplicate symbol errors
+        if (compiled_functions.count(name) > 0)
+        {
+            return true;
+        }
+
+        // Convert Python instructions list to C++ vector
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i)
+        {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        // Extract bool constants (convert to 0/1)
+        std::vector<int64_t> bool_constants;
+        for (size_t i = 0; i < py_constants.size(); ++i)
+        {
+            nb::object const_obj = py_constants[i];
+            if (nb::isinstance<nb::bool_>(const_obj))
+            {
+                bool_constants.push_back(nb::cast<bool>(const_obj) ? 1 : 0);
+            }
+            else if (nb::isinstance<nb::int_>(const_obj))
+            {
+                bool_constants.push_back(nb::cast<int64_t>(const_obj) != 0 ? 1 : 0);
+            }
+            else
+            {
+                bool_constants.push_back(0);
+            }
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        llvm::Type *i64_type = llvm::Type::getInt64Ty(*local_context);
+
+        // Create function type - all i64 for bool mode (0 = false, 1 = true)
+        std::vector<llvm::Type *> param_types(param_count, i64_type);
+        llvm::FunctionType *func_type = llvm::FunctionType::get(
+            i64_type, // Return i64 (0 or 1)
+            param_types,
+            false);
+
+        llvm::Function *func = llvm::Function::Create(
+            func_type,
+            llvm::Function::ExternalLinkage,
+            name,
+            module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        // Create stack for values
+        std::vector<llvm::Value *> stack;
+
+        // Create allocas for local variables (all i64)
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        for (int i = 0; i < total_locals; ++i)
+        {
+            local_allocas[i] = builder.CreateAlloca(i64_type, nullptr, "local_" + std::to_string(i));
+        }
+
+        // Store function parameters
+        int arg_idx = 0;
+        for (auto &arg : func->args())
+        {
+            arg.setName("param_" + std::to_string(arg_idx));
+            if (arg_idx < total_locals)
+            {
+                builder.CreateStore(&arg, local_allocas[arg_idx]);
+            }
+            ++arg_idx;
+        }
+
+        // Jump targets for control flow
+        std::unordered_map<int, llvm::BasicBlock *> jump_targets;
+        jump_targets[0] = entry;
+
+        // First pass: Create basic blocks for jump targets
+        for (size_t i = 0; i < instructions.size(); ++i)
+        {
+            const auto &instr = instructions[i];
+            if (instr.opcode == op::POP_JUMP_IF_FALSE || instr.opcode == op::POP_JUMP_IF_TRUE)
+            {
+                int target_offset = instr.argval;
+                if (!jump_targets.count(target_offset))
+                {
+                    jump_targets[target_offset] = llvm::BasicBlock::Create(
+                        *local_context, "block_" + std::to_string(target_offset), func);
+                }
+            }
+            else if (instr.opcode == op::JUMP_BACKWARD)
+            {
+                int target_offset = instr.argval;
+                if (!jump_targets.count(target_offset))
+                {
+                    jump_targets[target_offset] = llvm::BasicBlock::Create(
+                        *local_context, "loop_header_" + std::to_string(target_offset), func);
+                }
+            }
+            else if (instr.opcode == op::JUMP_FORWARD)
+            {
+                int target_offset = instr.argval;
+                if (!jump_targets.count(target_offset))
+                {
+                    jump_targets[target_offset] = llvm::BasicBlock::Create(
+                        *local_context, "forward_" + std::to_string(target_offset), func);
+                }
+            }
+        }
+
+        // Supported opcodes for bool mode
+        std::unordered_set<uint16_t> supported_bool_opcodes = {
+            op::RESUME, op::LOAD_FAST, op::LOAD_FAST_LOAD_FAST, op::LOAD_CONST,
+            op::STORE_FAST, op::COMPARE_OP, op::UNARY_NOT, op::TO_BOOL,
+            op::POP_JUMP_IF_FALSE, op::POP_JUMP_IF_TRUE, op::RETURN_VALUE, op::RETURN_CONST,
+            op::POP_TOP, op::JUMP_BACKWARD, op::JUMP_FORWARD, op::COPY,
+            op::NOP, op::CACHE
+        };
+
+        // Validate all opcodes are supported
+        for (size_t i = 0; i < instructions.size(); ++i)
+        {
+            const auto &instr = instructions[i];
+            if (supported_bool_opcodes.find(instr.opcode) == supported_bool_opcodes.end())
+            {
+                llvm::errs() << "Bool mode: unsupported opcode " << static_cast<int>(instr.opcode)
+                             << " at offset " << instr.offset << ". Use mode='auto' or mode='object'.\n";
+                return false;
+            }
+        }
+
+        // Second pass: Generate code
+        for (size_t i = 0; i < instructions.size(); ++i)
+        {
+            const auto &instr = instructions[i];
+
+            // Check if we need to insert at a jump target block
+            if (jump_targets.count(instr.offset) && jump_targets[instr.offset] != entry)
+            {
+                llvm::BasicBlock *target_block = jump_targets[instr.offset];
+                if (!builder.GetInsertBlock()->getTerminator())
+                {
+                    builder.CreateBr(target_block);
+                }
+                builder.SetInsertPoint(target_block);
+            }
+
+            if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE || instr.opcode == op::TO_BOOL)
+            {
+                // No-op - in bool mode, TO_BOOL is a no-op since values are already 0/1
+            }
+            else if (instr.opcode == op::LOAD_FAST)
+            {
+                if (local_allocas.count(instr.arg))
+                {
+                    llvm::Value *val = builder.CreateLoad(i64_type, local_allocas[instr.arg], "load_" + std::to_string(instr.arg));
+                    stack.push_back(val);
+                }
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST)
+            {
+                int idx1 = (instr.arg >> 4) & 0xF;
+                int idx2 = instr.arg & 0xF;
+                if (local_allocas.count(idx1))
+                {
+                    llvm::Value *val1 = builder.CreateLoad(i64_type, local_allocas[idx1], "load_" + std::to_string(idx1));
+                    stack.push_back(val1);
+                }
+                if (local_allocas.count(idx2))
+                {
+                    llvm::Value *val2 = builder.CreateLoad(i64_type, local_allocas[idx2], "load_" + std::to_string(idx2));
+                    stack.push_back(val2);
+                }
+            }
+            else if (instr.opcode == op::LOAD_CONST)
+            {
+                if (instr.arg < bool_constants.size())
+                {
+                    llvm::Value *val = llvm::ConstantInt::get(i64_type, bool_constants[instr.arg]);
+                    stack.push_back(val);
+                }
+            }
+            else if (instr.opcode == op::STORE_FAST)
+            {
+                if (!stack.empty() && local_allocas.count(instr.arg))
+                {
+                    llvm::Value *val = stack.back();
+                    stack.pop_back();
+                    builder.CreateStore(val, local_allocas[instr.arg]);
+                }
+            }
+            else if (instr.opcode == op::UNARY_NOT)
+            {
+                // Logical NOT: 0 -> 1, non-zero -> 0
+                if (!stack.empty())
+                {
+                    llvm::Value *val = stack.back(); stack.pop_back();
+                    llvm::Value *is_zero = builder.CreateICmpEQ(val, llvm::ConstantInt::get(i64_type, 0), "is_zero");
+                    llvm::Value *result = builder.CreateZExt(is_zero, i64_type, "not_result");
+                    stack.push_back(result);
+                }
+            }
+            else if (instr.opcode == op::COMPARE_OP)
+            {
+                if (stack.size() >= 2)
+                {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    llvm::Value *cmp_result = nullptr;
+
+                    // Compare op mapping (Python 3.13 encoding: arg >> 5)
+                    switch (instr.arg >> 5)
+                    {
+                    case 0: // LT
+                        cmp_result = builder.CreateICmpSLT(lhs, rhs, "lt");
+                        break;
+                    case 1: // LE
+                        cmp_result = builder.CreateICmpSLE(lhs, rhs, "le");
+                        break;
+                    case 2: // EQ
+                        cmp_result = builder.CreateICmpEQ(lhs, rhs, "eq");
+                        break;
+                    case 3: // NE
+                        cmp_result = builder.CreateICmpNE(lhs, rhs, "ne");
+                        break;
+                    case 4: // GT
+                        cmp_result = builder.CreateICmpSGT(lhs, rhs, "gt");
+                        break;
+                    case 5: // GE
+                        cmp_result = builder.CreateICmpSGE(lhs, rhs, "ge");
+                        break;
+                    default:
+                        cmp_result = builder.CreateICmpEQ(lhs, rhs, "cmp");
+                    }
+
+                    // Convert i1 to i64 (0 or 1) for stack
+                    llvm::Value *i64_result = builder.CreateZExt(cmp_result, i64_type, "cmp_i64");
+                    stack.push_back(i64_result);
+                }
+            }
+            else if (instr.opcode == op::POP_JUMP_IF_FALSE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *cond = stack.back(); stack.pop_back();
+                    llvm::Value *is_true = builder.CreateICmpNE(cond, llvm::ConstantInt::get(i64_type, 0), "is_true");
+
+                    int target_offset = instr.argval;
+                    llvm::BasicBlock *true_block = llvm::BasicBlock::Create(*local_context, "true_" + std::to_string(i), func);
+                    llvm::BasicBlock *false_block = jump_targets.count(target_offset) ? jump_targets[target_offset] : entry;
+
+                    builder.CreateCondBr(is_true, true_block, false_block);
+                    builder.SetInsertPoint(true_block);
+                }
+            }
+            else if (instr.opcode == op::POP_JUMP_IF_TRUE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *cond = stack.back(); stack.pop_back();
+                    llvm::Value *is_true = builder.CreateICmpNE(cond, llvm::ConstantInt::get(i64_type, 0), "is_true");
+
+                    int target_offset = instr.argval;
+                    llvm::BasicBlock *false_block = llvm::BasicBlock::Create(*local_context, "false_" + std::to_string(i), func);
+                    llvm::BasicBlock *true_block = jump_targets.count(target_offset) ? jump_targets[target_offset] : entry;
+
+                    builder.CreateCondBr(is_true, true_block, false_block);
+                    builder.SetInsertPoint(false_block);
+                }
+            }
+            else if (instr.opcode == op::JUMP_BACKWARD)
+            {
+                int target_offset = instr.argval;
+                if (!jump_targets.count(target_offset))
+                {
+                    jump_targets[target_offset] = llvm::BasicBlock::Create(
+                        *local_context, "loop_header_" + std::to_string(target_offset), func);
+                }
+                if (!builder.GetInsertBlock()->getTerminator())
+                {
+                    builder.CreateBr(jump_targets[target_offset]);
+                }
+
+                llvm::BasicBlock *after_loop = llvm::BasicBlock::Create(
+                    *local_context, "after_loop_" + std::to_string(i), func);
+                builder.SetInsertPoint(after_loop);
+            }
+            else if (instr.opcode == op::JUMP_FORWARD)
+            {
+                int target_offset = instr.argval;
+                if (!jump_targets.count(target_offset))
+                {
+                    jump_targets[target_offset] = llvm::BasicBlock::Create(
+                        *local_context, "forward_" + std::to_string(target_offset), func);
+                }
+                if (!builder.GetInsertBlock()->getTerminator())
+                {
+                    builder.CreateBr(jump_targets[target_offset]);
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE)
+            {
+                if (!stack.empty())
+                {
+                    llvm::Value *ret = stack.back();
+                    builder.CreateRet(ret);
+                }
+                else
+                {
+                    builder.CreateRet(llvm::ConstantInt::get(i64_type, 0));
+                }
+            }
+            else if (instr.opcode == op::RETURN_CONST)
+            {
+                if (instr.arg < bool_constants.size())
+                {
+                    builder.CreateRet(llvm::ConstantInt::get(i64_type, bool_constants[instr.arg]));
+                }
+                else
+                {
+                    builder.CreateRet(llvm::ConstantInt::get(i64_type, 0));
+                }
+            }
+            else if (instr.opcode == op::POP_TOP)
+            {
+                if (!stack.empty())
+                {
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::COPY)
+            {
+                if (instr.arg <= stack.size())
+                {
+                    stack.push_back(stack[stack.size() - instr.arg]);
+                }
+            }
+        }
+
+        // Ensure function has a return
+        if (!builder.GetInsertBlock()->getTerminator())
+        {
+            builder.CreateRet(llvm::ConstantInt::get(i64_type, 0));
+        }
+
+        // Capture IR if dump_ir is enabled
+        if (dump_ir)
+        {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+
+        // Optimize
+        optimize_module(*module, func);
+
+        // Add to JIT
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err)
+        {
+            llvm::errs() << "Failed to add module: " << toString(std::move(err)) << "\n";
+            return false;
+        }
+
+        // Mark as compiled
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Int32 Mode Compilation (C Interop)
+    // =========================================================================
+    bool JITCore::compile_int32_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit) return false;
+        if (compiled_functions.count(name) > 0) return true;
+
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i) {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        std::vector<int32_t> int_constants;
+        for (size_t i = 0; i < py_constants.size(); ++i) {
+            nb::object const_obj = py_constants[i];
+            if (nb::isinstance<nb::int_>(const_obj))
+                int_constants.push_back(static_cast<int32_t>(nb::cast<int64_t>(const_obj)));
+            else
+                int_constants.push_back(0);
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        llvm::Type *i32_type = llvm::Type::getInt32Ty(*local_context);
+
+        std::vector<llvm::Type *> param_types(param_count, i32_type);
+        llvm::FunctionType *func_type = llvm::FunctionType::get(i32_type, param_types, false);
+        llvm::Function *func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, name, module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        std::vector<llvm::Value *> stack;
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        for (int i = 0; i < total_locals; ++i)
+            local_allocas[i] = builder.CreateAlloca(i32_type, nullptr, "local_" + std::to_string(i));
+
+        int arg_idx = 0;
+        for (auto &arg : func->args()) {
+            if (arg_idx < total_locals) builder.CreateStore(&arg, local_allocas[arg_idx]);
+            ++arg_idx;
+        }
+
+        // Simple code generation for basic arithmetic
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            const auto &instr = instructions[i];
+            
+            if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE) {
+                // No-op
+            }
+            else if (instr.opcode == op::LOAD_FAST) {
+                if (local_allocas.count(instr.arg))
+                    stack.push_back(builder.CreateLoad(i32_type, local_allocas[instr.arg]));
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST) {
+                // Python 3.13: Load two locals at once (arg encodes both indices)
+                int idx1 = (instr.arg >> 4) & 0xF;
+                int idx2 = instr.arg & 0xF;
+                if (local_allocas.count(idx1))
+                    stack.push_back(builder.CreateLoad(i32_type, local_allocas[idx1]));
+                if (local_allocas.count(idx2))
+                    stack.push_back(builder.CreateLoad(i32_type, local_allocas[idx2]));
+            }
+            else if (instr.opcode == op::LOAD_CONST) {
+                if (instr.arg < int_constants.size())
+                    stack.push_back(llvm::ConstantInt::get(i32_type, int_constants[instr.arg]));
+            }
+            else if (instr.opcode == op::STORE_FAST) {
+                if (!stack.empty() && local_allocas.count(instr.arg)) {
+                    builder.CreateStore(stack.back(), local_allocas[instr.arg]);
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::BINARY_OP) {
+                if (stack.size() >= 2) {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    llvm::Value *result = nullptr;
+                    switch (instr.arg) {
+                        case 0: result = builder.CreateAdd(lhs, rhs); break;
+                        case 10: result = builder.CreateSub(lhs, rhs); break;
+                        case 5: result = builder.CreateMul(lhs, rhs); break;
+                        case 2: result = builder.CreateSDiv(lhs, rhs); break;
+                        default: result = lhs;
+                    }
+                    stack.push_back(result);
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE) {
+                if (!stack.empty()) builder.CreateRet(stack.back());
+                else builder.CreateRet(llvm::ConstantInt::get(i32_type, 0));
+            }
+            else if (instr.opcode == op::RETURN_CONST) {
+                if (instr.arg < int_constants.size())
+                    builder.CreateRet(llvm::ConstantInt::get(i32_type, int_constants[instr.arg]));
+                else
+                    builder.CreateRet(llvm::ConstantInt::get(i32_type, 0));
+            }
+        }
+
+        if (!builder.GetInsertBlock()->getTerminator())
+            builder.CreateRet(llvm::ConstantInt::get(i32_type, 0));
+
+        if (dump_ir) {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+
+        optimize_module(*module, func);
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err) return false;
+
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Float32 Mode Compilation (SIMD/ML)
+    // =========================================================================
+    bool JITCore::compile_float32_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit) return false;
+        if (compiled_functions.count(name) > 0) return true;
+
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i) {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        std::vector<float> float_constants;
+        for (size_t i = 0; i < py_constants.size(); ++i) {
+            nb::object const_obj = py_constants[i];
+            if (nb::isinstance<nb::float_>(const_obj))
+                float_constants.push_back(static_cast<float>(nb::cast<double>(const_obj)));
+            else if (nb::isinstance<nb::int_>(const_obj))
+                float_constants.push_back(static_cast<float>(nb::cast<int64_t>(const_obj)));
+            else
+                float_constants.push_back(0.0f);
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        llvm::Type *f32_type = llvm::Type::getFloatTy(*local_context);
+
+        std::vector<llvm::Type *> param_types(param_count, f32_type);
+        llvm::FunctionType *func_type = llvm::FunctionType::get(f32_type, param_types, false);
+        llvm::Function *func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, name, module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        std::vector<llvm::Value *> stack;
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        for (int i = 0; i < total_locals; ++i)
+            local_allocas[i] = builder.CreateAlloca(f32_type, nullptr, "local_" + std::to_string(i));
+
+        int arg_idx = 0;
+        for (auto &arg : func->args()) {
+            if (arg_idx < total_locals) builder.CreateStore(&arg, local_allocas[arg_idx]);
+            ++arg_idx;
+        }
+
+        // Simple code generation for basic arithmetic
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            const auto &instr = instructions[i];
+            
+            if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE) {
+                // No-op
+            }
+            else if (instr.opcode == op::LOAD_FAST) {
+                if (local_allocas.count(instr.arg))
+                    stack.push_back(builder.CreateLoad(f32_type, local_allocas[instr.arg]));
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST) {
+                // Python 3.13: Load two locals at once (arg encodes both indices)
+                int idx1 = (instr.arg >> 4) & 0xF;
+                int idx2 = instr.arg & 0xF;
+                if (local_allocas.count(idx1))
+                    stack.push_back(builder.CreateLoad(f32_type, local_allocas[idx1]));
+                if (local_allocas.count(idx2))
+                    stack.push_back(builder.CreateLoad(f32_type, local_allocas[idx2]));
+            }
+            else if (instr.opcode == op::LOAD_CONST) {
+                if (instr.arg < float_constants.size())
+                    stack.push_back(llvm::ConstantFP::get(f32_type, float_constants[instr.arg]));
+            }
+            else if (instr.opcode == op::STORE_FAST) {
+                if (!stack.empty() && local_allocas.count(instr.arg)) {
+                    builder.CreateStore(stack.back(), local_allocas[instr.arg]);
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::BINARY_OP) {
+                if (stack.size() >= 2) {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    llvm::Value *result = nullptr;
+                    switch (instr.arg) {
+                        case 0: result = builder.CreateFAdd(lhs, rhs); break;
+                        case 10: result = builder.CreateFSub(lhs, rhs); break;
+                        case 5: result = builder.CreateFMul(lhs, rhs); break;
+                        case 11: result = builder.CreateFDiv(lhs, rhs); break;
+                        default: result = lhs;
+                    }
+                    stack.push_back(result);
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE) {
+                if (!stack.empty()) builder.CreateRet(stack.back());
+                else builder.CreateRet(llvm::ConstantFP::get(f32_type, 0.0f));
+            }
+            else if (instr.opcode == op::RETURN_CONST) {
+                if (instr.arg < float_constants.size())
+                    builder.CreateRet(llvm::ConstantFP::get(f32_type, float_constants[instr.arg]));
+                else
+                    builder.CreateRet(llvm::ConstantFP::get(f32_type, 0.0f));
+            }
+        }
+
+        if (!builder.GetInsertBlock()->getTerminator())
+            builder.CreateRet(llvm::ConstantFP::get(f32_type, 0.0f));
+
+        if (dump_ir) {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+
+        optimize_module(*module, func);
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err) return false;
+
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Complex128 Mode Compilation (Scientific Computing)
+    // =========================================================================
+    bool JITCore::compile_complex128_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit) return false;
+        if (compiled_functions.count(name) > 0) return true;
+
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i) {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        // Parse constants - complex numbers stored as (real, imag) pairs
+        std::vector<std::pair<double, double>> complex_constants;
+        for (size_t i = 0; i < py_constants.size(); ++i) {
+            nb::object const_obj = py_constants[i];
+            double real_part = 0.0, imag_part = 0.0;
+            // Check if it's a complex number
+            if (PyComplex_Check(const_obj.ptr())) {
+                real_part = PyComplex_RealAsDouble(const_obj.ptr());
+                imag_part = PyComplex_ImagAsDouble(const_obj.ptr());
+            } else if (nb::isinstance<nb::float_>(const_obj)) {
+                real_part = nb::cast<double>(const_obj);
+            } else if (nb::isinstance<nb::int_>(const_obj)) {
+                real_part = static_cast<double>(nb::cast<int64_t>(const_obj));
+            }
+            complex_constants.push_back({real_part, imag_part});
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        // Complex128 type: {double, double} for (real, imag)
+        llvm::Type *f64_type = llvm::Type::getDoubleTy(*local_context);
+        llvm::StructType *complex_type = llvm::StructType::get(*local_context, {f64_type, f64_type}, false);
+
+        std::vector<llvm::Type *> param_types(param_count, complex_type);
+        llvm::FunctionType *func_type = llvm::FunctionType::get(complex_type, param_types, false);
+        llvm::Function *func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, name, module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        std::vector<llvm::Value *> stack;
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        for (int i = 0; i < total_locals; ++i)
+            local_allocas[i] = builder.CreateAlloca(complex_type, nullptr, "local_" + std::to_string(i));
+
+        int arg_idx = 0;
+        for (auto &arg : func->args()) {
+            if (arg_idx < total_locals) builder.CreateStore(&arg, local_allocas[arg_idx]);
+            ++arg_idx;
+        }
+
+        // Helper lambdas for complex operations
+        auto extract_real = [&](llvm::Value *c) -> llvm::Value* {
+            return builder.CreateExtractValue(c, {0}, "real");
+        };
+        auto extract_imag = [&](llvm::Value *c) -> llvm::Value* {
+            return builder.CreateExtractValue(c, {1}, "imag");
+        };
+        auto make_complex = [&](llvm::Value *real, llvm::Value *imag) -> llvm::Value* {
+            llvm::Value *c = llvm::UndefValue::get(complex_type);
+            c = builder.CreateInsertValue(c, real, {0}, "c_real");
+            c = builder.CreateInsertValue(c, imag, {1}, "c_imag");
+            return c;
+        };
+
+        // Code generation
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            const auto &instr = instructions[i];
+            
+            if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE) {
+                // No-op
+            }
+            else if (instr.opcode == op::LOAD_FAST) {
+                if (local_allocas.count(instr.arg))
+                    stack.push_back(builder.CreateLoad(complex_type, local_allocas[instr.arg]));
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST) {
+                int idx1 = (instr.arg >> 4) & 0xF;
+                int idx2 = instr.arg & 0xF;
+                if (local_allocas.count(idx1))
+                    stack.push_back(builder.CreateLoad(complex_type, local_allocas[idx1]));
+                if (local_allocas.count(idx2))
+                    stack.push_back(builder.CreateLoad(complex_type, local_allocas[idx2]));
+            }
+            else if (instr.opcode == op::LOAD_CONST) {
+                if (instr.arg < complex_constants.size()) {
+                    auto &cc = complex_constants[instr.arg];
+                    llvm::Value *real = llvm::ConstantFP::get(f64_type, cc.first);
+                    llvm::Value *imag = llvm::ConstantFP::get(f64_type, cc.second);
+                    stack.push_back(make_complex(real, imag));
+                }
+            }
+            else if (instr.opcode == op::STORE_FAST) {
+                if (!stack.empty() && local_allocas.count(instr.arg)) {
+                    builder.CreateStore(stack.back(), local_allocas[instr.arg]);
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::BINARY_OP) {
+                if (stack.size() >= 2) {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    
+                    llvm::Value *ar = extract_real(lhs);
+                    llvm::Value *ai = extract_imag(lhs);
+                    llvm::Value *br = extract_real(rhs);
+                    llvm::Value *bi = extract_imag(rhs);
+                    
+                    llvm::Value *result_real = nullptr;
+                    llvm::Value *result_imag = nullptr;
+                    
+                    switch (instr.arg) {
+                        case 0: // Add: (ar+br, ai+bi)
+                            result_real = builder.CreateFAdd(ar, br, "add_real");
+                            result_imag = builder.CreateFAdd(ai, bi, "add_imag");
+                            break;
+                        case 10: // Sub: (ar-br, ai-bi)
+                            result_real = builder.CreateFSub(ar, br, "sub_real");
+                            result_imag = builder.CreateFSub(ai, bi, "sub_imag");
+                            break;
+                        case 5: { // Mul: (ar*br - ai*bi, ar*bi + ai*br)
+                            llvm::Value *ar_br = builder.CreateFMul(ar, br);
+                            llvm::Value *ai_bi = builder.CreateFMul(ai, bi);
+                            llvm::Value *ar_bi = builder.CreateFMul(ar, bi);
+                            llvm::Value *ai_br = builder.CreateFMul(ai, br);
+                            result_real = builder.CreateFSub(ar_br, ai_bi, "mul_real");
+                            result_imag = builder.CreateFAdd(ar_bi, ai_br, "mul_imag");
+                            break;
+                        }
+                        case 11: { // Div: (ar*br + ai*bi, ai*br - ar*bi) / (br*br + bi*bi)
+                            llvm::Value *ar_br = builder.CreateFMul(ar, br);
+                            llvm::Value *ai_bi = builder.CreateFMul(ai, bi);
+                            llvm::Value *ai_br = builder.CreateFMul(ai, br);
+                            llvm::Value *ar_bi = builder.CreateFMul(ar, bi);
+                            llvm::Value *br_br = builder.CreateFMul(br, br);
+                            llvm::Value *bi_bi = builder.CreateFMul(bi, bi);
+                            llvm::Value *denom = builder.CreateFAdd(br_br, bi_bi, "denom");
+                            llvm::Value *num_real = builder.CreateFAdd(ar_br, ai_bi);
+                            llvm::Value *num_imag = builder.CreateFSub(ai_br, ar_bi);
+                            result_real = builder.CreateFDiv(num_real, denom, "div_real");
+                            result_imag = builder.CreateFDiv(num_imag, denom, "div_imag");
+                            break;
+                        }
+                        default:
+                            result_real = ar;
+                            result_imag = ai;
+                    }
+                    stack.push_back(make_complex(result_real, result_imag));
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE) {
+                if (!stack.empty()) {
+                    builder.CreateRet(stack.back());
+                } else {
+                    llvm::Value *zero = llvm::ConstantFP::get(f64_type, 0.0);
+                    builder.CreateRet(make_complex(zero, zero));
+                }
+            }
+            else if (instr.opcode == op::RETURN_CONST) {
+                if (instr.arg < complex_constants.size()) {
+                    auto &cc = complex_constants[instr.arg];
+                    llvm::Value *real = llvm::ConstantFP::get(f64_type, cc.first);
+                    llvm::Value *imag = llvm::ConstantFP::get(f64_type, cc.second);
+                    builder.CreateRet(make_complex(real, imag));
+                } else {
+                    llvm::Value *zero = llvm::ConstantFP::get(f64_type, 0.0);
+                    builder.CreateRet(make_complex(zero, zero));
+                }
+            }
+        }
+
+        if (!builder.GetInsertBlock()->getTerminator()) {
+            llvm::Value *zero = llvm::ConstantFP::get(f64_type, 0.0);
+            builder.CreateRet(make_complex(zero, zero));
+        }
+
+        if (dump_ir) {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+
+        optimize_module(*module, func);
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err) return false;
+
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Complex64 Mode Compilation (Single-Precision Complex)
+    // =========================================================================
+    bool JITCore::compile_complex64_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit) return false;
+        if (compiled_functions.count(name) > 0) return true;
+
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i) {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        // Parse constants - complex numbers stored as (real, imag) pairs
+        std::vector<std::pair<float, float>> complex_constants;
+        for (size_t i = 0; i < py_constants.size(); ++i) {
+            nb::object const_obj = py_constants[i];
+            float real_part = 0.0f, imag_part = 0.0f;
+            if (PyComplex_Check(const_obj.ptr())) {
+                real_part = static_cast<float>(PyComplex_RealAsDouble(const_obj.ptr()));
+                imag_part = static_cast<float>(PyComplex_ImagAsDouble(const_obj.ptr()));
+            } else if (nb::isinstance<nb::float_>(const_obj)) {
+                real_part = static_cast<float>(nb::cast<double>(const_obj));
+            } else if (nb::isinstance<nb::int_>(const_obj)) {
+                real_part = static_cast<float>(nb::cast<int64_t>(const_obj));
+            }
+            complex_constants.push_back({real_part, imag_part});
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        // Complex64 type: {float, float} for (real, imag)
+        llvm::Type *f32_type = llvm::Type::getFloatTy(*local_context);
+        llvm::StructType *complex_type = llvm::StructType::get(*local_context, {f32_type, f32_type}, false);
+
+        std::vector<llvm::Type *> param_types(param_count, complex_type);
+        llvm::FunctionType *func_type = llvm::FunctionType::get(complex_type, param_types, false);
+        llvm::Function *func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, name, module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        std::vector<llvm::Value *> stack;
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        for (int i = 0; i < total_locals; ++i)
+            local_allocas[i] = builder.CreateAlloca(complex_type, nullptr, "local_" + std::to_string(i));
+
+        int arg_idx = 0;
+        for (auto &arg : func->args()) {
+            if (arg_idx < total_locals) builder.CreateStore(&arg, local_allocas[arg_idx]);
+            ++arg_idx;
+        }
+
+        // Helper lambdas for complex operations
+        auto extract_real = [&](llvm::Value *c) -> llvm::Value* {
+            return builder.CreateExtractValue(c, {0}, "real");
+        };
+        auto extract_imag = [&](llvm::Value *c) -> llvm::Value* {
+            return builder.CreateExtractValue(c, {1}, "imag");
+        };
+        auto make_complex = [&](llvm::Value *real, llvm::Value *imag) -> llvm::Value* {
+            llvm::Value *c = llvm::UndefValue::get(complex_type);
+            c = builder.CreateInsertValue(c, real, {0}, "c_real");
+            c = builder.CreateInsertValue(c, imag, {1}, "c_imag");
+            return c;
+        };
+
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            const auto &instr = instructions[i];
+            
+            if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE) {
+                // No-op
+            }
+            else if (instr.opcode == op::LOAD_FAST) {
+                if (local_allocas.count(instr.arg))
+                    stack.push_back(builder.CreateLoad(complex_type, local_allocas[instr.arg]));
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST) {
+                int idx1 = (instr.arg >> 4) & 0xF;
+                int idx2 = instr.arg & 0xF;
+                if (local_allocas.count(idx1))
+                    stack.push_back(builder.CreateLoad(complex_type, local_allocas[idx1]));
+                if (local_allocas.count(idx2))
+                    stack.push_back(builder.CreateLoad(complex_type, local_allocas[idx2]));
+            }
+            else if (instr.opcode == op::LOAD_CONST) {
+                if (instr.arg < complex_constants.size()) {
+                    auto &cc = complex_constants[instr.arg];
+                    llvm::Value *real = llvm::ConstantFP::get(f32_type, cc.first);
+                    llvm::Value *imag = llvm::ConstantFP::get(f32_type, cc.second);
+                    stack.push_back(make_complex(real, imag));
+                }
+            }
+            else if (instr.opcode == op::STORE_FAST) {
+                if (!stack.empty() && local_allocas.count(instr.arg)) {
+                    builder.CreateStore(stack.back(), local_allocas[instr.arg]);
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::BINARY_OP) {
+                if (stack.size() >= 2) {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    
+                    llvm::Value *ar = extract_real(lhs);
+                    llvm::Value *ai = extract_imag(lhs);
+                    llvm::Value *br = extract_real(rhs);
+                    llvm::Value *bi = extract_imag(rhs);
+                    
+                    llvm::Value *result_real = nullptr;
+                    llvm::Value *result_imag = nullptr;
+                    
+                    switch (instr.arg) {
+                        case 0: // Add: (ar+br, ai+bi)
+                            result_real = builder.CreateFAdd(ar, br, "add_real");
+                            result_imag = builder.CreateFAdd(ai, bi, "add_imag");
+                            break;
+                        case 10: // Sub: (ar-br, ai-bi)
+                            result_real = builder.CreateFSub(ar, br, "sub_real");
+                            result_imag = builder.CreateFSub(ai, bi, "sub_imag");
+                            break;
+                        case 5: { // Mul: (ar*br - ai*bi, ar*bi + ai*br)
+                            llvm::Value *ar_br = builder.CreateFMul(ar, br);
+                            llvm::Value *ai_bi = builder.CreateFMul(ai, bi);
+                            llvm::Value *ar_bi = builder.CreateFMul(ar, bi);
+                            llvm::Value *ai_br = builder.CreateFMul(ai, br);
+                            result_real = builder.CreateFSub(ar_br, ai_bi, "mul_real");
+                            result_imag = builder.CreateFAdd(ar_bi, ai_br, "mul_imag");
+                            break;
+                        }
+                        case 11: { // Div: (ar*br + ai*bi, ai*br - ar*bi) / (br*br + bi*bi)
+                            llvm::Value *ar_br = builder.CreateFMul(ar, br);
+                            llvm::Value *ai_bi = builder.CreateFMul(ai, bi);
+                            llvm::Value *ai_br = builder.CreateFMul(ai, br);
+                            llvm::Value *ar_bi = builder.CreateFMul(ar, bi);
+                            llvm::Value *br_br = builder.CreateFMul(br, br);
+                            llvm::Value *bi_bi = builder.CreateFMul(bi, bi);
+                            llvm::Value *denom = builder.CreateFAdd(br_br, bi_bi, "denom");
+                            llvm::Value *num_real = builder.CreateFAdd(ar_br, ai_bi);
+                            llvm::Value *num_imag = builder.CreateFSub(ai_br, ar_bi);
+                            result_real = builder.CreateFDiv(num_real, denom, "div_real");
+                            result_imag = builder.CreateFDiv(num_imag, denom, "div_imag");
+                            break;
+                        }
+                        default:
+                            result_real = ar;
+                            result_imag = ai;
+                    }
+                    stack.push_back(make_complex(result_real, result_imag));
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE) {
+                if (!stack.empty()) {
+                    builder.CreateRet(stack.back());
+                } else {
+                    llvm::Value *zero = llvm::ConstantFP::get(f32_type, 0.0f);
+                    builder.CreateRet(make_complex(zero, zero));
+                }
+            }
+            else if (instr.opcode == op::RETURN_CONST) {
+                if (instr.arg < complex_constants.size()) {
+                    auto &cc = complex_constants[instr.arg];
+                    llvm::Value *real = llvm::ConstantFP::get(f32_type, cc.first);
+                    llvm::Value *imag = llvm::ConstantFP::get(f32_type, cc.second);
+                    builder.CreateRet(make_complex(real, imag));
+                } else {
+                    llvm::Value *zero = llvm::ConstantFP::get(f32_type, 0.0f);
+                    builder.CreateRet(make_complex(zero, zero));
+                }
+            }
+        }
+
+        if (!builder.GetInsertBlock()->getTerminator()) {
+            llvm::Value *zero = llvm::ConstantFP::get(f32_type, 0.0f);
+            builder.CreateRet(make_complex(zero, zero));
+        }
+
+        if (dump_ir) {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+
+        optimize_module(*module, func);
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err) return false;
+
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Optional<f64> Mode Compilation (Nullable Float64)
+    // =========================================================================
+    bool JITCore::compile_optional_f64_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit) return false;
+        if (compiled_functions.count(name) > 0) return true;
+
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i) {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        // Parse constants - track which are None vs float
+        struct OptionalConst {
+            bool has_value;
+            double value;
+        };
+        std::vector<OptionalConst> optional_constants;
+        for (size_t i = 0; i < py_constants.size(); ++i) {
+            nb::object const_obj = py_constants[i];
+            if (const_obj.is_none()) {
+                optional_constants.push_back({false, 0.0});
+            } else if (nb::isinstance<nb::float_>(const_obj)) {
+                optional_constants.push_back({true, nb::cast<double>(const_obj)});
+            } else if (nb::isinstance<nb::int_>(const_obj)) {
+                optional_constants.push_back({true, static_cast<double>(nb::cast<int64_t>(const_obj))});
+            } else {
+                optional_constants.push_back({false, 0.0});
+            }
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        // Optional<f64> type: {i64, f64} for (has_value, value)
+        // Uses i64 to match C++ struct ABI (int64_t has_value, double value)
+        llvm::Type *i64_type = llvm::Type::getInt64Ty(*local_context);
+        llvm::Type *f64_type = llvm::Type::getDoubleTy(*local_context);
+        llvm::StructType *optional_type = llvm::StructType::get(*local_context, {i64_type, f64_type}, false);
+        llvm::Type *ptr_type = llvm::PointerType::get(optional_type, 0);
+
+        // Function signature: void fn(OptionalF64* out, OptionalF64* a, OptionalF64* b, ...)
+        std::vector<llvm::Type *> param_types;
+        param_types.push_back(ptr_type);  // output pointer
+        for (int i = 0; i < param_count; ++i) {
+            param_types.push_back(ptr_type);  // input pointers
+        }
+        llvm::FunctionType *func_type = llvm::FunctionType::get(builder.getVoidTy(), param_types, false);
+        llvm::Function *func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, name, module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        // Get output pointer and input pointers from function args
+        auto arg_iter = func->arg_begin();
+        llvm::Value *out_ptr = &*arg_iter++;
+
+        std::vector<llvm::Value *> stack;
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        for (int i = 0; i < total_locals; ++i)
+            local_allocas[i] = builder.CreateAlloca(optional_type, nullptr, "local_" + std::to_string(i));
+
+        // Load input pointers into local variables
+        int arg_idx = 0;
+        while (arg_iter != func->arg_end() && arg_idx < param_count) {
+            llvm::Value *input_ptr = &*arg_iter++;
+            llvm::Value *input_val = builder.CreateLoad(optional_type, input_ptr);
+            if (arg_idx < total_locals) {
+                builder.CreateStore(input_val, local_allocas[arg_idx]);
+            }
+            ++arg_idx;
+        }
+
+        // Helper lambdas for optional operations
+        auto extract_has_value = [&](llvm::Value *opt) -> llvm::Value* {
+            return builder.CreateExtractValue(opt, {0}, "has_value");
+        };
+        auto extract_value = [&](llvm::Value *opt) -> llvm::Value* {
+            return builder.CreateExtractValue(opt, {1}, "value");
+        };
+        auto make_some = [&](llvm::Value *value) -> llvm::Value* {
+            llvm::Value *opt = llvm::UndefValue::get(optional_type);
+            opt = builder.CreateInsertValue(opt, llvm::ConstantInt::get(i64_type, 1), {0});  // has_value = 1
+            opt = builder.CreateInsertValue(opt, value, {1});
+            return opt;
+        };
+        auto make_none = [&]() -> llvm::Value* {
+            llvm::Value *opt = llvm::UndefValue::get(optional_type);
+            opt = builder.CreateInsertValue(opt, llvm::ConstantInt::get(i64_type, 0), {0});  // has_value = 0
+            opt = builder.CreateInsertValue(opt, llvm::ConstantFP::get(f64_type, 0.0), {1});
+            return opt;
+        };
+
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            const auto &instr = instructions[i];
+            
+            if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE) {
+                // No-op
+            }
+            else if (instr.opcode == op::LOAD_FAST) {
+                if (local_allocas.count(instr.arg))
+                    stack.push_back(builder.CreateLoad(optional_type, local_allocas[instr.arg]));
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST) {
+                int idx1 = (instr.arg >> 4) & 0xF;
+                int idx2 = instr.arg & 0xF;
+                if (local_allocas.count(idx1))
+                    stack.push_back(builder.CreateLoad(optional_type, local_allocas[idx1]));
+                if (local_allocas.count(idx2))
+                    stack.push_back(builder.CreateLoad(optional_type, local_allocas[idx2]));
+            }
+            else if (instr.opcode == op::LOAD_CONST) {
+                if (instr.arg < optional_constants.size()) {
+                    auto &oc = optional_constants[instr.arg];
+                    if (oc.has_value) {
+                        stack.push_back(make_some(llvm::ConstantFP::get(f64_type, oc.value)));
+                    } else {
+                        stack.push_back(make_none());
+                    }
+                }
+            }
+            else if (instr.opcode == op::STORE_FAST) {
+                if (!stack.empty() && local_allocas.count(instr.arg)) {
+                    builder.CreateStore(stack.back(), local_allocas[instr.arg]);
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::BINARY_OP) {
+                // For optional types: if either operand is None, result is None
+                // Otherwise perform the operation on the values
+                if (stack.size() >= 2) {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    
+                    llvm::Value *lhs_has = extract_has_value(lhs);
+                    llvm::Value *rhs_has = extract_has_value(rhs);
+                    llvm::Value *both_have = builder.CreateAnd(lhs_has, rhs_has, "both_have");
+                    
+                    llvm::Value *lhs_val = extract_value(lhs);
+                    llvm::Value *rhs_val = extract_value(rhs);
+                    
+                    llvm::Value *result_val = nullptr;
+                    switch (instr.arg) {
+                        case 0: result_val = builder.CreateFAdd(lhs_val, rhs_val); break;
+                        case 10: result_val = builder.CreateFSub(lhs_val, rhs_val); break;
+                        case 5: result_val = builder.CreateFMul(lhs_val, rhs_val); break;
+                        case 11: result_val = builder.CreateFDiv(lhs_val, rhs_val); break;
+                        default: result_val = lhs_val;
+                    }
+                    
+                    // Build result optional: {both_have, result_val}
+                    llvm::Value *result = llvm::UndefValue::get(optional_type);
+                    result = builder.CreateInsertValue(result, both_have, {0});
+                    result = builder.CreateInsertValue(result, result_val, {1});
+                    stack.push_back(result);
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE) {
+                if (!stack.empty()) {
+                    builder.CreateStore(stack.back(), out_ptr);
+                } else {
+                    builder.CreateStore(make_none(), out_ptr);
+                }
+                builder.CreateRetVoid();
+            }
+            else if (instr.opcode == op::RETURN_CONST) {
+                if (instr.arg < optional_constants.size()) {
+                    auto &oc = optional_constants[instr.arg];
+                    if (oc.has_value) {
+                        builder.CreateStore(make_some(llvm::ConstantFP::get(f64_type, oc.value)), out_ptr);
+                    } else {
+                        builder.CreateStore(make_none(), out_ptr);
+                    }
+                } else {
+                    builder.CreateStore(make_none(), out_ptr);
+                }
+                builder.CreateRetVoid();
+            }
+        }
+
+        if (!builder.GetInsertBlock()->getTerminator()) {
+            builder.CreateStore(make_none(), out_ptr);
+            builder.CreateRetVoid();
+        }
+
+        if (dump_ir) {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+
+        optimize_module(*module, func);
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err) return false;
+
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Ptr Mode Compilation (Array Access)
+    // =========================================================================
+    bool JITCore::compile_ptr_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit) return false;
+        if (compiled_functions.count(name) > 0) return true;
+
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i) {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        // Parse constants as doubles
+        std::vector<double> float_constants;
+        for (size_t i = 0; i < py_constants.size(); ++i) {
+            nb::object const_obj = py_constants[i];
+            if (nb::isinstance<nb::float_>(const_obj))
+                float_constants.push_back(nb::cast<double>(const_obj));
+            else if (nb::isinstance<nb::int_>(const_obj))
+                float_constants.push_back(static_cast<double>(nb::cast<int64_t>(const_obj)));
+            else
+                float_constants.push_back(0.0);
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        // Types: ptr for array, i64 for indices, double for elements
+        llvm::Type *ptr_type = llvm::PointerType::get(*local_context, 0);
+        llvm::Type *i64_type = llvm::Type::getInt64Ty(*local_context);
+        llvm::Type *f64_type = llvm::Type::getDoubleTy(*local_context);
+
+        // Function takes ptr as first arg, remaining are i64
+        std::vector<llvm::Type *> param_types;
+        param_types.push_back(ptr_type); // First param: array pointer
+        for (int i = 1; i < param_count; ++i)
+            param_types.push_back(i64_type); // Remaining: indices/sizes
+
+        llvm::FunctionType *func_type = llvm::FunctionType::get(f64_type, param_types, false);
+        llvm::Function *func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, name, module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        std::vector<llvm::Value *> stack;
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas_ptr;
+
+        // Create allocas for locals - first is ptr, rest are i64
+        local_allocas_ptr[0] = builder.CreateAlloca(ptr_type, nullptr, "local_ptr_0");
+        for (int i = 1; i < total_locals; ++i)
+            local_allocas[i] = builder.CreateAlloca(i64_type, nullptr, "local_" + std::to_string(i));
+
+        // Store function arguments
+        int arg_idx = 0;
+        for (auto &arg : func->args()) {
+            if (arg_idx == 0) {
+                builder.CreateStore(&arg, local_allocas_ptr[0]);
+            } else if (arg_idx < total_locals && local_allocas.count(arg_idx)) {
+                builder.CreateStore(&arg, local_allocas[arg_idx]);
+            }
+            ++arg_idx;
+        }
+
+        // Code generation
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            const auto &instr = instructions[i];
+            
+            if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE) {
+                // No-op
+            }
+            else if (instr.opcode == op::LOAD_FAST) {
+                if (instr.arg == 0) {
+                    // Load ptr
+                    stack.push_back(builder.CreateLoad(ptr_type, local_allocas_ptr[0]));
+                } else if (local_allocas.count(instr.arg)) {
+                    stack.push_back(builder.CreateLoad(i64_type, local_allocas[instr.arg]));
+                }
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST) {
+                int idx1 = (instr.arg >> 4) & 0xF;
+                int idx2 = instr.arg & 0xF;
+                if (idx1 == 0)
+                    stack.push_back(builder.CreateLoad(ptr_type, local_allocas_ptr[0]));
+                else if (local_allocas.count(idx1))
+                    stack.push_back(builder.CreateLoad(i64_type, local_allocas[idx1]));
+                if (idx2 == 0)
+                    stack.push_back(builder.CreateLoad(ptr_type, local_allocas_ptr[0]));
+                else if (local_allocas.count(idx2))
+                    stack.push_back(builder.CreateLoad(i64_type, local_allocas[idx2]));
+            }
+            else if (instr.opcode == op::LOAD_CONST) {
+                if (instr.arg < float_constants.size())
+                    stack.push_back(llvm::ConstantFP::get(f64_type, float_constants[instr.arg]));
+            }
+            else if (instr.opcode == op::STORE_FAST) {
+                if (!stack.empty() && instr.arg > 0 && local_allocas.count(instr.arg)) {
+                    llvm::Value *val = stack.back();
+                    // Convert to i64 if needed for index storage
+                    if (val->getType()->isDoubleTy())
+                        val = builder.CreateFPToSI(val, i64_type);
+                    else if (val->getType()->isPointerTy())
+                        val = builder.CreatePtrToInt(val, i64_type);
+                    builder.CreateStore(val, local_allocas[instr.arg]);
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::BINARY_SUBSCR) {
+                // Array element access: arr[i]
+                if (stack.size() >= 2) {
+                    llvm::Value *idx = stack.back(); stack.pop_back();
+                    llvm::Value *arr = stack.back(); stack.pop_back();
+                    
+                    // Convert idx to i64 if needed
+                    if (idx->getType()->isDoubleTy())
+                        idx = builder.CreateFPToSI(idx, i64_type);
+                    
+                    // GEP to get pointer to element
+                    llvm::Value *elem_ptr = builder.CreateGEP(f64_type, arr, idx, "elem_ptr");
+                    // Load the element
+                    llvm::Value *elem = builder.CreateLoad(f64_type, elem_ptr, "elem");
+                    stack.push_back(elem);
+                }
+            }
+            else if (instr.opcode == op::BINARY_OP) {
+                if (stack.size() >= 2) {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    
+                    // Ensure both are f64
+                    if (lhs->getType()->isIntegerTy())
+                        lhs = builder.CreateSIToFP(lhs, f64_type);
+                    if (rhs->getType()->isIntegerTy())
+                        rhs = builder.CreateSIToFP(rhs, f64_type);
+                    
+                    llvm::Value *result = nullptr;
+                    switch (instr.arg) {
+                        case 0: result = builder.CreateFAdd(lhs, rhs); break;
+                        case 10: result = builder.CreateFSub(lhs, rhs); break;
+                        case 5: result = builder.CreateFMul(lhs, rhs); break;
+                        case 11: result = builder.CreateFDiv(lhs, rhs); break;
+                        default: result = lhs;
+                    }
+                    stack.push_back(result);
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE) {
+                if (!stack.empty()) {
+                    llvm::Value *ret = stack.back();
+                    if (ret->getType()->isIntegerTy())
+                        ret = builder.CreateSIToFP(ret, f64_type);
+                    builder.CreateRet(ret);
+                } else {
+                    builder.CreateRet(llvm::ConstantFP::get(f64_type, 0.0));
+                }
+            }
+            else if (instr.opcode == op::RETURN_CONST) {
+                if (instr.arg < float_constants.size())
+                    builder.CreateRet(llvm::ConstantFP::get(f64_type, float_constants[instr.arg]));
+                else
+                    builder.CreateRet(llvm::ConstantFP::get(f64_type, 0.0));
+            }
+        }
+
+        if (!builder.GetInsertBlock()->getTerminator())
+            builder.CreateRet(llvm::ConstantFP::get(f64_type, 0.0));
+
+        if (dump_ir) {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+
+        optimize_module(*module, func);
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err) return false;
+
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Vec4f Mode Compilation (SSE SIMD)
+    // =========================================================================
+    // Uses ptr-based ABI: void fn(float* out, float* a, float* b)
+    // Internally loads to <4 x float>, does SIMD ops, stores result
+    bool JITCore::compile_vec4f_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit) return false;
+        if (compiled_functions.count(name) > 0) return true;
+
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i) {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        // Types
+        llvm::Type *void_type = llvm::Type::getVoidTy(*local_context);
+        llvm::Type *ptr_type = llvm::PointerType::get(*local_context, 0);
+        llvm::Type *f32 = llvm::Type::getFloatTy(*local_context);
+        llvm::FixedVectorType *vec4f_type = llvm::FixedVectorType::get(f32, 4);
+
+        // Function signature: void fn(ptr out, ptr a, ptr b)
+        // param_count=2 means a+b, we add out as first hidden param
+        std::vector<llvm::Type *> param_types;
+        param_types.push_back(ptr_type);  // out
+        for (int i = 0; i < param_count; ++i)
+            param_types.push_back(ptr_type);  // inputs
+
+        llvm::FunctionType *func_type = llvm::FunctionType::get(void_type, param_types, false);
+        llvm::Function *func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, name, module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        // Get function args
+        auto args = func->arg_begin();
+        llvm::Value *out_ptr = &*args++;
+        std::vector<llvm::Value*> input_ptrs;
+        for (int i = 0; i < param_count; ++i) {
+            input_ptrs.push_back(&*args++);
+        }
+
+        // Stack for bytecode ops
+        std::vector<llvm::Value *> stack;
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        for (int i = 0; i < total_locals; ++i)
+            local_allocas[i] = builder.CreateAlloca(vec4f_type, nullptr, "local_" + std::to_string(i));
+
+        // Load input vectors into local allocas (treating params as vec4f)
+        for (int i = 0; i < param_count && i < total_locals; ++i) {
+            llvm::Value *vec = builder.CreateAlignedLoad(vec4f_type, input_ptrs[i], llvm::MaybeAlign(16), "input_" + std::to_string(i));
+            builder.CreateStore(vec, local_allocas[i]);
+        }
+
+        llvm::Value *result_vec = nullptr;
+
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            const auto &instr = instructions[i];
+            
+            if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE) {
+                // No-op
+            }
+            else if (instr.opcode == op::LOAD_FAST) {
+                if (local_allocas.count(instr.arg))
+                    stack.push_back(builder.CreateLoad(vec4f_type, local_allocas[instr.arg]));
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST) {
+                int idx1 = (instr.arg >> 4) & 0xF;
+                int idx2 = instr.arg & 0xF;
+                if (local_allocas.count(idx1))
+                    stack.push_back(builder.CreateLoad(vec4f_type, local_allocas[idx1]));
+                if (local_allocas.count(idx2))
+                    stack.push_back(builder.CreateLoad(vec4f_type, local_allocas[idx2]));
+            }
+            else if (instr.opcode == op::STORE_FAST) {
+                if (!stack.empty() && local_allocas.count(instr.arg)) {
+                    builder.CreateStore(stack.back(), local_allocas[instr.arg]);
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::BINARY_OP) {
+                if (stack.size() >= 2) {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    llvm::Value *res = nullptr;
+                    switch (instr.arg) {
+                        case 0: res = builder.CreateFAdd(lhs, rhs); break;
+                        case 10: res = builder.CreateFSub(lhs, rhs); break;
+                        case 5: res = builder.CreateFMul(lhs, rhs); break;
+                        case 11: res = builder.CreateFDiv(lhs, rhs); break;
+                        default: res = lhs;
+                    }
+                    stack.push_back(res);
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE) {
+                if (!stack.empty()) result_vec = stack.back();
+            }
+        }
+
+        // Store result to output pointer
+        if (result_vec) {
+            builder.CreateAlignedStore(result_vec, out_ptr, llvm::MaybeAlign(16));
+        } else {
+            builder.CreateAlignedStore(llvm::ConstantAggregateZero::get(vec4f_type), out_ptr, llvm::MaybeAlign(16));
+        }
+        builder.CreateRetVoid();
+
+        if (dump_ir) {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+
+        optimize_module(*module, func);
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err) return false;
+
+        compiled_functions.insert(name);
+        return true;
+    }
+
+    // =========================================================================
+    // Vec8i Mode Compilation (AVX SIMD)
+    // =========================================================================
+    // Uses ptr-based ABI: void fn(int32_t* out, int32_t* a, int32_t* b)
+    // Internally loads to <8 x i32>, does SIMD ops, stores result
+    bool JITCore::compile_vec8i_function(nb::list py_instructions, nb::list py_constants, const std::string &name, int param_count, int total_locals)
+    {
+        if (!jit) return false;
+        if (compiled_functions.count(name) > 0) return true;
+
+        std::vector<Instruction> instructions;
+        for (size_t i = 0; i < py_instructions.size(); ++i) {
+            nb::dict instr_dict = nb::cast<nb::dict>(py_instructions[i]);
+            Instruction instr;
+            instr.opcode = nb::cast<uint8_t>(instr_dict["opcode"]);
+            instr.arg = nb::cast<uint16_t>(instr_dict["arg"]);
+            instr.argval = nb::cast<int32_t>(instr_dict["argval"]);
+            instr.offset = nb::cast<uint16_t>(instr_dict["offset"]);
+            instructions.push_back(instr);
+        }
+
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+        auto module = std::make_unique<llvm::Module>(name, *local_context);
+        llvm::IRBuilder<> builder(*local_context);
+
+        // Types
+        llvm::Type *void_type = llvm::Type::getVoidTy(*local_context);
+        llvm::Type *ptr_type = llvm::PointerType::get(*local_context, 0);
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*local_context);
+        llvm::FixedVectorType *vec8i_type = llvm::FixedVectorType::get(i32, 8);
+
+        // Function signature: void fn(ptr out, ptr a, ptr b)
+        std::vector<llvm::Type *> param_types;
+        param_types.push_back(ptr_type);  // out
+        for (int i = 0; i < param_count; ++i)
+            param_types.push_back(ptr_type);  // inputs
+
+        llvm::FunctionType *func_type = llvm::FunctionType::get(void_type, param_types, false);
+        llvm::Function *func = llvm::Function::Create(func_type, llvm::Function::ExternalLinkage, name, module.get());
+
+        llvm::BasicBlock *entry = llvm::BasicBlock::Create(*local_context, "entry", func);
+        builder.SetInsertPoint(entry);
+
+        // Get function args
+        auto args = func->arg_begin();
+        llvm::Value *out_ptr = &*args++;
+        std::vector<llvm::Value*> input_ptrs;
+        for (int i = 0; i < param_count; ++i) {
+            input_ptrs.push_back(&*args++);
+        }
+
+        // Stack for bytecode ops
+        std::vector<llvm::Value *> stack;
+        std::unordered_map<int, llvm::AllocaInst *> local_allocas;
+        for (int i = 0; i < total_locals; ++i)
+            local_allocas[i] = builder.CreateAlloca(vec8i_type, nullptr, "local_" + std::to_string(i));
+
+        // Load input vectors into local allocas
+        for (int i = 0; i < param_count && i < total_locals; ++i) {
+            llvm::Value *vec = builder.CreateAlignedLoad(vec8i_type, input_ptrs[i], llvm::MaybeAlign(32), "input_" + std::to_string(i));
+            builder.CreateStore(vec, local_allocas[i]);
+        }
+
+        llvm::Value *result_vec = nullptr;
+
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            const auto &instr = instructions[i];
+            
+            if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE) {
+                // No-op
+            }
+            else if (instr.opcode == op::LOAD_FAST) {
+                if (local_allocas.count(instr.arg))
+                    stack.push_back(builder.CreateLoad(vec8i_type, local_allocas[instr.arg]));
+            }
+            else if (instr.opcode == op::LOAD_FAST_LOAD_FAST) {
+                int idx1 = (instr.arg >> 4) & 0xF;
+                int idx2 = instr.arg & 0xF;
+                if (local_allocas.count(idx1))
+                    stack.push_back(builder.CreateLoad(vec8i_type, local_allocas[idx1]));
+                if (local_allocas.count(idx2))
+                    stack.push_back(builder.CreateLoad(vec8i_type, local_allocas[idx2]));
+            }
+            else if (instr.opcode == op::STORE_FAST) {
+                if (!stack.empty() && local_allocas.count(instr.arg)) {
+                    builder.CreateStore(stack.back(), local_allocas[instr.arg]);
+                    stack.pop_back();
+                }
+            }
+            else if (instr.opcode == op::BINARY_OP) {
+                if (stack.size() >= 2) {
+                    llvm::Value *rhs = stack.back(); stack.pop_back();
+                    llvm::Value *lhs = stack.back(); stack.pop_back();
+                    llvm::Value *res = nullptr;
+                    switch (instr.arg) {
+                        case 0: res = builder.CreateAdd(lhs, rhs); break;
+                        case 10: res = builder.CreateSub(lhs, rhs); break;
+                        case 5: res = builder.CreateMul(lhs, rhs); break;
+                        case 2: res = builder.CreateSDiv(lhs, rhs); break;
+                        default: res = lhs;
+                    }
+                    stack.push_back(res);
+                }
+            }
+            else if (instr.opcode == op::RETURN_VALUE) {
+                if (!stack.empty()) result_vec = stack.back();
+            }
+        }
+
+        // Store result to output pointer
+        if (result_vec) {
+            builder.CreateAlignedStore(result_vec, out_ptr, llvm::MaybeAlign(32));
+        } else {
+            builder.CreateAlignedStore(llvm::ConstantAggregateZero::get(vec8i_type), out_ptr, llvm::MaybeAlign(32));
+        }
+        builder.CreateRetVoid();
+
+        if (dump_ir) {
+            std::string ir_str;
+            llvm::raw_string_ostream ir_stream(ir_str);
+            module->print(ir_stream, nullptr);
+            last_ir = ir_stream.str();
+        }
+
+        optimize_module(*module, func);
+        auto err = jit->addIRModule(llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context)));
+        if (err) return false;
+
         compiled_functions.insert(name);
         return true;
     }

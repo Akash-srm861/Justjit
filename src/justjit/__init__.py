@@ -11,6 +11,7 @@ if sys.platform == "win32":
 
     # Check common LLVM installation paths
     _llvm_paths = [
+        r"C:\Users\vetri\llvm-project\build\Release\bin",  # Local LLVM build
         os.path.join(os.environ.get("LLVM_DIR", ""), "..", "..", "..", "bin"),
         r"C:\Program Files\LLVM\bin",
         os.path.expanduser(r"~\llvm-project\build\Release\bin"),
@@ -18,8 +19,23 @@ if sys.platform == "win32":
     for _path in _llvm_paths:
         _path = os.path.normpath(_path)
         if os.path.isdir(_path):
-            os.add_dll_directory(_path)
-            break
+            try:
+                os.add_dll_directory(_path)
+            except OSError:
+                pass
+    
+    # Also check vcpkg paths for zlib dependency
+    _vcpkg_paths = [
+        r"C:\vcpkg\installed\x64-windows\bin",
+        os.path.join(os.environ.get("VCPKG_ROOT", ""), "installed", "x64-windows", "bin"),
+    ]
+    for _path in _vcpkg_paths:
+        _path = os.path.normpath(_path)
+        if os.path.isdir(_path):
+            try:
+                os.add_dll_directory(_path)
+            except OSError:
+                pass
 
 # Now import the C++ extension module
 from ._core import JIT, create_jit_generator, create_jit_coroutine
@@ -701,6 +717,16 @@ def _create_jit_wrapper(
 
     # Determine compilation mode
     use_int_mode = mode == "int"
+    use_float_mode = mode == "float"
+    use_bool_mode = mode == "bool"
+    use_int32_mode = mode == "int32"
+    use_float32_mode = mode == "float32"
+    use_complex128_mode = mode == "complex128"
+    use_ptr_mode = mode == "ptr"
+    use_vec4f_mode = mode == "vec4f"
+    use_vec8i_mode = mode == "vec8i"
+    use_complex64_mode = mode == "complex64"
+    use_optional_f64_mode = mode == "optional_f64"
 
     compiled_ptr = None
 
@@ -716,6 +742,86 @@ def _create_jit_wrapper(
                 if not success:
                     return func(*args, **kwargs)
                 compiled_ptr = jit_instance.get_int_callable(func.__name__, param_count)
+            elif use_float_mode:
+                # Float mode - pure native f64 operations
+                success = jit_instance.compile_float(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_float_callable(func.__name__, param_count)
+            elif use_bool_mode:
+                # Bool mode - pure native boolean operations
+                success = jit_instance.compile_bool(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_bool_callable(func.__name__, param_count)
+            elif use_int32_mode:
+                # Int32 mode - 32-bit integer for C interop
+                success = jit_instance.compile_int32(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_int32_callable(func.__name__, param_count)
+            elif use_float32_mode:
+                # Float32 mode - 32-bit float for SIMD/ML
+                success = jit_instance.compile_float32(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_float32_callable(func.__name__, param_count)
+            elif use_complex128_mode:
+                # Complex128 mode - native {double,double} struct for complex numbers
+                success = jit_instance.compile_complex128(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_complex128_callable(func.__name__, param_count)
+            elif use_ptr_mode:
+                # Ptr mode - array element access via GEP
+                success = jit_instance.compile_ptr(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_ptr_callable(func.__name__, param_count)
+            elif use_vec4f_mode:
+                # Vec4f mode - SSE SIMD <4 x float>
+                success = jit_instance.compile_vec4f(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_vec4f_callable(func.__name__, param_count)
+            elif use_vec8i_mode:
+                # Vec8i mode - AVX SIMD <8 x i32>
+                success = jit_instance.compile_vec8i(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_vec8i_callable(func.__name__, param_count)
+            elif use_complex64_mode:
+                # Complex64 mode - single-precision complex {float, float}
+                success = jit_instance.compile_complex64(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_complex64_callable(func.__name__, param_count)
+            elif use_optional_f64_mode:
+                # Optional<f64> mode - nullable float64 {i1, f64}
+                success = jit_instance.compile_optional_f64(
+                    instructions, constants, func.__name__, param_count, total_locals
+                )
+                if not success:
+                    return func(*args, **kwargs)
+                compiled_ptr = jit_instance.get_optional_f64_callable(func.__name__, param_count)
             else:
                 # Object mode - handles Python objects with closure support
                 # Bug #4 Fix: Pass globals_dict and builtins_dict for runtime lookup
@@ -750,7 +856,7 @@ def _create_jit_wrapper(
     wrapper._jit_instance = jit_instance
     wrapper._original_func = func
     wrapper._instructions = instructions
-    wrapper._mode = "int" if use_int_mode else "object"
+    wrapper._mode = "int" if use_int_mode else ("float" if use_float_mode else ("bool" if use_bool_mode else ("int32" if use_int32_mode else ("float32" if use_float32_mode else ("complex128" if use_complex128_mode else ("ptr" if use_ptr_mode else ("vec4f" if use_vec4f_mode else ("vec8i" if use_vec8i_mode else ("complex64" if use_complex64_mode else ("optional_f64" if use_optional_f64_mode else "object"))))))))))
     return wrapper
 
 
@@ -802,6 +908,46 @@ def dump_ir(func):
     
     if func._mode == "int":
         jit_instance.compile_int(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "float":
+        jit_instance.compile_float(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "bool":
+        jit_instance.compile_bool(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "int32":
+        jit_instance.compile_int32(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "float32":
+        jit_instance.compile_float32(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "complex128":
+        jit_instance.compile_complex128(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "ptr":
+        jit_instance.compile_ptr(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "vec4f":
+        jit_instance.compile_vec4f(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "vec8i":
+        jit_instance.compile_vec8i(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "complex64":
+        jit_instance.compile_complex64(
+            instructions, constants, ir_name, param_count, total_locals
+        )
+    elif func._mode == "optional_f64":
+        jit_instance.compile_optional_f64(
             instructions, constants, ir_name, param_count, total_locals
         )
     else:
