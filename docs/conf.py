@@ -49,6 +49,12 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 
+# Google site verification
+html_extra_path = []
+html_context = {
+    'extra_head': '<meta name="google-site-verification" content="OlHF9pAvxSfClPtPHzJqYIjKltPCxOASLcEQHIfhqBo" />'
+}
+
 # Theme options
 html_theme_options = {
     'navigation_depth': 4,
