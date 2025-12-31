@@ -264,141 +264,148 @@ inline PyObject* bool_to_py(bool val) {
 // ============================================================================
 // C API exports - Registered as JIT symbols for inline C code
 // ============================================================================
+
+#if defined(_WIN32)
+  #define JIT_EXPORT __declspec(dllexport)
+#else
+  #define JIT_EXPORT __attribute__((visibility("default")))
+#endif
+
 extern "C" {
     // GIL management
-    void* jit_gil_acquire();
-    void jit_gil_release(void* guard);
-    void* jit_gil_release_begin();
-    void jit_gil_release_end(void* save);
+    JIT_EXPORT void* jit_gil_acquire();
+    JIT_EXPORT void jit_gil_release(void* guard);
+    JIT_EXPORT void* jit_gil_release_begin();
+    JIT_EXPORT void jit_gil_release_end(void* save);
     
     // Python object management
-    void* jit_pyobj_new(PyObject* p);
-    void jit_pyobj_free(void* ptr);
-    PyObject* jit_pyobj_get(void* ptr);
+    JIT_EXPORT void* jit_pyobj_new(PyObject* p);
+    JIT_EXPORT void jit_pyobj_free(void* ptr);
+    JIT_EXPORT PyObject* jit_pyobj_get(void* ptr);
     
     // Buffer access
-    void* jit_buffer_new(PyObject* arr);
-    void jit_buffer_free(void* buf);
-    void* jit_buffer_data(void* buf);
-    Py_ssize_t jit_buffer_size(void* buf);
+    JIT_EXPORT void* jit_buffer_new(PyObject* arr);
+    JIT_EXPORT void jit_buffer_free(void* buf);
+    JIT_EXPORT void* jit_buffer_data(void* buf);
+    JIT_EXPORT Py_ssize_t jit_buffer_size(void* buf);
     
     // Type conversions
-    long long jit_py_to_long(PyObject* obj);
-    double jit_py_to_double(PyObject* obj);
-    const char* jit_py_to_string(PyObject* obj);
-    PyObject* jit_long_to_py(long long val);
-    PyObject* jit_double_to_py(double val);
-    PyObject* jit_string_to_py(const char* val);
+    JIT_EXPORT long long jit_py_to_long(PyObject* obj);
+    JIT_EXPORT double jit_py_to_double(PyObject* obj);
+    JIT_EXPORT const char* jit_py_to_string(PyObject* obj);
+    JIT_EXPORT PyObject* jit_long_to_py(long long val);
+    JIT_EXPORT PyObject* jit_double_to_py(double val);
+    JIT_EXPORT PyObject* jit_string_to_py(const char* val);
     
     // Python function call from C
-    PyObject* jit_call_python(PyObject* func, PyObject* args);
+    JIT_EXPORT PyObject* jit_call_python(PyObject* func, PyObject* args);
     
     // List operations
-    PyObject* jit_list_new(Py_ssize_t size);
-    Py_ssize_t jit_list_size(PyObject* list);
-    PyObject* jit_list_get(PyObject* list, Py_ssize_t index);
-    int jit_list_set(PyObject* list, Py_ssize_t index, PyObject* item);
-    int jit_list_append(PyObject* list, PyObject* item);
+    JIT_EXPORT PyObject* jit_list_new(Py_ssize_t size);
+    JIT_EXPORT Py_ssize_t jit_list_size(PyObject* list);
+    JIT_EXPORT PyObject* jit_list_get(PyObject* list, Py_ssize_t index);
+    JIT_EXPORT int jit_list_set(PyObject* list, Py_ssize_t index, PyObject* item);
+    JIT_EXPORT int jit_list_append(PyObject* list, PyObject* item);
     
     // Dict operations
-    PyObject* jit_dict_new();
-    PyObject* jit_dict_get(PyObject* dict, const char* key);
-    PyObject* jit_dict_get_obj(PyObject* dict, PyObject* key);
-    int jit_dict_set(PyObject* dict, const char* key, PyObject* val);
-    int jit_dict_set_obj(PyObject* dict, PyObject* key, PyObject* val);
-    int jit_dict_del(PyObject* dict, const char* key);
-    PyObject* jit_dict_keys(PyObject* dict);
+    JIT_EXPORT PyObject* jit_dict_new();
+    JIT_EXPORT PyObject* jit_dict_get(PyObject* dict, const char* key);
+    JIT_EXPORT PyObject* jit_dict_get_obj(PyObject* dict, PyObject* key);
+    JIT_EXPORT int jit_dict_set(PyObject* dict, const char* key, PyObject* val);
+    JIT_EXPORT int jit_dict_set_obj(PyObject* dict, PyObject* key, PyObject* val);
+    JIT_EXPORT int jit_dict_del(PyObject* dict, const char* key);
+    JIT_EXPORT PyObject* jit_dict_keys(PyObject* dict);
     
     // Tuple operations
-    PyObject* jit_tuple_new(Py_ssize_t size);
-    PyObject* jit_tuple_get(PyObject* tuple, Py_ssize_t index);
-    int jit_tuple_set(PyObject* tuple, Py_ssize_t index, PyObject* item);
+    JIT_EXPORT PyObject* jit_tuple_new(Py_ssize_t size);
+    JIT_EXPORT PyObject* jit_tuple_get(PyObject* tuple, Py_ssize_t index);
+    JIT_EXPORT int jit_tuple_set(PyObject* tuple, Py_ssize_t index, PyObject* item);
     
     // Object attribute/method access
-    PyObject* jit_getattr(PyObject* obj, const char* name);
-    int jit_setattr(PyObject* obj, const char* name, PyObject* val);
-    int jit_hasattr(PyObject* obj, const char* name);
-    PyObject* jit_call_method(PyObject* obj, const char* method, PyObject* args);
-    PyObject* jit_call_method0(PyObject* obj, const char* method);
+    JIT_EXPORT PyObject* jit_getattr(PyObject* obj, const char* name);
+    JIT_EXPORT int jit_setattr(PyObject* obj, const char* name, PyObject* val);
+    JIT_EXPORT int jit_hasattr(PyObject* obj, const char* name);
+    JIT_EXPORT PyObject* jit_call_method(PyObject* obj, const char* method, PyObject* args);
+    JIT_EXPORT PyObject* jit_call_method0(PyObject* obj, const char* method);
     
     // Reference counting
-    void jit_incref(PyObject* obj);
-    void jit_decref(PyObject* obj);
+    JIT_EXPORT void jit_incref(PyObject* obj);
+    JIT_EXPORT void jit_decref(PyObject* obj);
     
     // Module import
-    PyObject* jit_import(const char* name);
+    JIT_EXPORT PyObject* jit_import(const char* name);
     
     // Sequence/iterator operations
-    Py_ssize_t jit_len(PyObject* obj);
-    PyObject* jit_getitem(PyObject* obj, Py_ssize_t index);
-    int jit_setitem(PyObject* obj, Py_ssize_t index, PyObject* val);
-    PyObject* jit_getitem_obj(PyObject* obj, PyObject* key);
-    int jit_setitem_obj(PyObject* obj, PyObject* key, PyObject* val);
+    JIT_EXPORT Py_ssize_t jit_len(PyObject* obj);
+    JIT_EXPORT PyObject* jit_getitem(PyObject* obj, Py_ssize_t index);
+    JIT_EXPORT int jit_setitem(PyObject* obj, Py_ssize_t index, PyObject* val);
+    JIT_EXPORT PyObject* jit_getitem_obj(PyObject* obj, PyObject* key);
+    JIT_EXPORT int jit_setitem_obj(PyObject* obj, PyObject* key, PyObject* val);
     
     // Type checking
-    int jit_is_list(PyObject* obj);
-    int jit_is_dict(PyObject* obj);
-    int jit_is_tuple(PyObject* obj);
-    int jit_is_int(PyObject* obj);
-    int jit_is_float(PyObject* obj);
-    int jit_is_str(PyObject* obj);
-    int jit_is_none(PyObject* obj);
-    int jit_is_callable(PyObject* obj);
+    JIT_EXPORT int jit_is_list(PyObject* obj);
+    JIT_EXPORT int jit_is_dict(PyObject* obj);
+    JIT_EXPORT int jit_is_tuple(PyObject* obj);
+    JIT_EXPORT int jit_is_int(PyObject* obj);
+    JIT_EXPORT int jit_is_float(PyObject* obj);
+    JIT_EXPORT int jit_is_str(PyObject* obj);
+    JIT_EXPORT int jit_is_none(PyObject* obj);
+    JIT_EXPORT int jit_is_callable(PyObject* obj);
     
     // Constants
-    PyObject* jit_none();
-    PyObject* jit_true();
-    PyObject* jit_false();
+    JIT_EXPORT PyObject* jit_none();
+    JIT_EXPORT PyObject* jit_true();
+    JIT_EXPORT PyObject* jit_false();
     
 // Error handling
-int jit_error_occurred();
-void jit_error_clear();
-void jit_error_print();
+JIT_EXPORT int jit_error_occurred();
+JIT_EXPORT void jit_error_clear();
+JIT_EXPORT void jit_error_print();
 
 // =========================================================================
 // Enhanced Callback Functions for Bidirectional Interop
 // =========================================================================
 
 // Call Python function with 1 argument
-PyObject* jit_call1(PyObject* func, PyObject* arg);
+JIT_EXPORT PyObject* jit_call1(PyObject* func, PyObject* arg);
 
 // Call Python function with 2 arguments
-PyObject* jit_call2(PyObject* func, PyObject* arg1, PyObject* arg2);
+JIT_EXPORT PyObject* jit_call2(PyObject* func, PyObject* arg1, PyObject* arg2);
 
 // Call Python function with 3 arguments
-PyObject* jit_call3(PyObject* func, PyObject* arg1, PyObject* arg2, PyObject* arg3);
+JIT_EXPORT PyObject* jit_call3(PyObject* func, PyObject* arg1, PyObject* arg2, PyObject* arg3);
 
 // Call method with 1 argument
-PyObject* jit_call_method1(PyObject* obj, const char* method, PyObject* arg);
+JIT_EXPORT PyObject* jit_call_method1(PyObject* obj, const char* method, PyObject* arg);
 
 // Call method with 2 arguments
-PyObject* jit_call_method2(PyObject* obj, const char* method, PyObject* arg1, PyObject* arg2);
+JIT_EXPORT PyObject* jit_call_method2(PyObject* obj, const char* method, PyObject* arg1, PyObject* arg2);
 
 // Build tuple from arguments
-PyObject* jit_build_args1(PyObject* arg);
-PyObject* jit_build_args2(PyObject* arg1, PyObject* arg2);
-PyObject* jit_build_args3(PyObject* arg1, PyObject* arg2, PyObject* arg3);
+JIT_EXPORT PyObject* jit_build_args1(PyObject* arg);
+JIT_EXPORT PyObject* jit_build_args2(PyObject* arg1, PyObject* arg2);
+JIT_EXPORT PyObject* jit_build_args3(PyObject* arg1, PyObject* arg2, PyObject* arg3);
 
 // Convert C types to Python and build args
-PyObject* jit_build_int_args1(long long v1);
-PyObject* jit_build_int_args2(long long v1, long long v2);
-PyObject* jit_build_float_args1(double v1);
-PyObject* jit_build_float_args2(double v1, double v2);
+JIT_EXPORT PyObject* jit_build_int_args1(long long v1);
+JIT_EXPORT PyObject* jit_build_int_args2(long long v1, long long v2);
+JIT_EXPORT PyObject* jit_build_float_args1(double v1);
+JIT_EXPORT PyObject* jit_build_float_args2(double v1, double v2);
 
 // Iterator support
-PyObject* jit_get_iter(PyObject* obj);
-PyObject* jit_iter_next(PyObject* iter);
-int jit_iter_check(PyObject* obj);
+JIT_EXPORT PyObject* jit_get_iter(PyObject* obj);
+JIT_EXPORT PyObject* jit_iter_next(PyObject* iter);
+JIT_EXPORT int jit_iter_check(PyObject* obj);
 
 
 // Bytes/bytearray support
-PyObject* jit_bytes_new(const char* data, Py_ssize_t len);
-const char* jit_bytes_data(PyObject* bytes);
-Py_ssize_t jit_bytes_len(PyObject* bytes);
+JIT_EXPORT PyObject* jit_bytes_new(const char* data, Py_ssize_t len);
+JIT_EXPORT const char* jit_bytes_data(PyObject* bytes);
+JIT_EXPORT Py_ssize_t jit_bytes_len(PyObject* bytes);
 
 // Simplified Python Expression Evaluation
-PyObject* jit_py_eval(const char* expr, PyObject* locals);
-PyObject* jit_py_exec(const char* code, PyObject* locals);
+JIT_EXPORT PyObject* jit_py_eval(const char* expr, PyObject* locals);
+JIT_EXPORT PyObject* jit_py_exec(const char* code, PyObject* locals);
 
 } // extern "C"
 
