@@ -16228,14 +16228,14 @@ namespace justjit
 // =========================================================================
 #ifdef JUSTJIT_HAS_CLANG
 
-    // RAII wrapper for clang diagnostics (LLVM 22 API)
+    // RAII wrapper for clang diagnostics (LLVM 18+ API)
     class DiagnosticsRAII {
     public:
         DiagnosticsRAII() 
-            : diag_opts_(),
-              diag_printer_(llvm::errs(), diag_opts_),
+            : diag_opts_(new clang::DiagnosticOptions()),
+              diag_printer_(new clang::TextDiagnosticPrinter(llvm::errs(), diag_opts_.get())),
               diag_id_(new clang::DiagnosticIDs()),
-              diags_(diag_id_, diag_opts_, &diag_printer_, false)
+              diags_(diag_id_, diag_opts_, diag_printer_.get(), false)
         {
         }
 
@@ -16246,8 +16246,8 @@ namespace justjit
         clang::DiagnosticsEngine& get() { return diags_; }
 
     private:
-        clang::DiagnosticOptions diag_opts_;
-        clang::TextDiagnosticPrinter diag_printer_;
+        llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions> diag_opts_;
+        std::unique_ptr<clang::TextDiagnosticPrinter> diag_printer_;
         llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs> diag_id_;
         clang::DiagnosticsEngine diags_;
     };
@@ -17156,10 +17156,10 @@ static inline float* buffer_float(void* pyobj) {
         // Create compiler instance
         clang::CompilerInstance compiler;
         
-        // Create diagnostics
-        clang::DiagnosticOptions diag_opts;
+        // Create diagnostics (LLVM 18+ API)
+        auto diag_opts = llvm::makeIntrusiveRefCnt<clang::DiagnosticOptions>();
         clang::TextDiagnosticPrinter* diag_printer = 
-            new clang::TextDiagnosticPrinter(llvm::errs(), diag_opts);
+            new clang::TextDiagnosticPrinter(llvm::errs(), diag_opts.get());
         compiler.createDiagnostics(*llvm::vfs::getRealFileSystem(), diag_printer);
         
         // Create invocation and parse args
@@ -17169,10 +17169,10 @@ static inline float* buffer_float(void* pyobj) {
             compiler.getDiagnostics()
         );
 
-        // Set up target
+        // Set up target (LLVM 18+ uses shared_ptr for TargetOptions)
         std::string target_triple = llvm::sys::getDefaultTargetTriple();
-        auto& target_opts = compiler.getTargetOpts();
-        target_opts.Triple = target_triple;
+        auto target_opts = std::make_shared<clang::TargetOptions>();
+        target_opts->Triple = target_triple;
         compiler.setTarget(clang::TargetInfo::CreateTargetInfo(
             compiler.getDiagnostics(), target_opts));
 
