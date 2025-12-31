@@ -60,13 +60,13 @@
 #endif
 
 // C helper function for NULL-safe Py_XINCREF (since Py_XINCREF is a macro)
-extern "C" void jit_xincref(PyObject *obj)
+extern "C" JIT_EXPORT void jit_xincref(PyObject *obj)
 {
     Py_XINCREF(obj);
 }
 
 // C helper function for NULL-safe Py_XDECREF (since Py_XDECREF is a macro)
-extern "C" void jit_xdecref(PyObject *obj)
+extern "C" JIT_EXPORT void jit_xdecref(PyObject *obj)
 {
     Py_XDECREF(obj);
 }
@@ -79,7 +79,7 @@ extern "C" void jit_xdecref(PyObject *obj)
 // =========================================================================
 
 // Unbox Python int to native int64
-extern "C" int64_t jit_unbox_int(PyObject *obj)
+extern "C" JIT_EXPORT int64_t jit_unbox_int(PyObject *obj)
 {
     if (obj == NULL) {
         PyErr_SetString(PyExc_TypeError, "cannot unbox None to int");
@@ -89,7 +89,7 @@ extern "C" int64_t jit_unbox_int(PyObject *obj)
 }
 
 // Unbox Python float to native double
-extern "C" double jit_unbox_float(PyObject *obj)
+extern "C" JIT_EXPORT double jit_unbox_float(PyObject *obj)
 {
     if (obj == NULL) {
         PyErr_SetString(PyExc_TypeError, "cannot unbox None to float");
@@ -99,7 +99,7 @@ extern "C" double jit_unbox_float(PyObject *obj)
 }
 
 // Unbox Python bool to native int (0 or 1)
-extern "C" int64_t jit_unbox_bool(PyObject *obj)
+extern "C" JIT_EXPORT int64_t jit_unbox_bool(PyObject *obj)
 {
     if (obj == NULL) {
         return 0;
@@ -108,26 +108,26 @@ extern "C" int64_t jit_unbox_bool(PyObject *obj)
 }
 
 // Box native int64 to Python int
-extern "C" PyObject *jit_box_int(int64_t val)
+extern "C" JIT_EXPORT PyObject *jit_box_int(int64_t val)
 {
     return PyLong_FromLongLong(val);
 }
 
 // Box native double to Python float
-extern "C" PyObject *jit_box_float(double val)
+extern "C" JIT_EXPORT PyObject *jit_box_float(double val)
 {
     return PyFloat_FromDouble(val);
 }
 
 // Box native bool (0/1) to Python bool
-extern "C" PyObject *jit_box_bool(int64_t val)
+extern "C" JIT_EXPORT PyObject *jit_box_bool(int64_t val)
 {
     return PyBool_FromLong(val);
 }
 
 // C helper function for CALL_KW opcode
 // Splits args array into positional tuple and kwargs dict based on kwnames tuple
-extern "C" PyObject *jit_call_with_kwargs(
+extern "C" JIT_EXPORT PyObject *jit_call_with_kwargs(
     PyObject *callable,
     PyObject **args,
     Py_ssize_t nargs,
@@ -193,7 +193,7 @@ extern "C" PyObject *jit_call_with_kwargs(
 // - If it's a coroutine, return it directly
 // - If it's a generator (from types.coroutine decorator), return it
 // - Otherwise, call __await__ and return the iterator
-extern "C" PyObject *JITGetAwaitable(PyObject *obj)
+extern "C" JIT_EXPORT PyObject *JITGetAwaitable(PyObject *obj)
 {
     // Check if it's a native coroutine by checking type name
     // (avoids using PyCoro_CheckExact which has symbol issues on some platforms)
@@ -517,7 +517,7 @@ extern "C" PyObject *JITMatchClass(PyObject *subject, PyObject *cls, int nargs, 
 
 // Debug helper function for tracing generator execution
 // Prints offset, opcode name, stack depth, and optionally a value
-extern "C" void jit_debug_trace(int offset, const char* opname, int stack_depth, PyObject* value)
+extern "C" JIT_EXPORT void jit_debug_trace(int offset, const char* opname, int stack_depth, PyObject* value)
 {
     fprintf(stderr, "[JIT TRACE] @%d %s | stack_depth=%d", offset, opname, stack_depth);
     if (value != NULL) {
@@ -535,7 +535,7 @@ extern "C" void jit_debug_trace(int offset, const char* opname, int stack_depth,
 }
 
 // Debug helper to print stack contents
-extern "C" void jit_debug_stack(const char* label, PyObject** stack_base, int stack_size)
+extern "C" JIT_EXPORT void jit_debug_stack(const char* label, PyObject** stack_base, int stack_size)
 {
     fprintf(stderr, "[JIT STACK] %s | size=%d | [", label, stack_size);
     for (int i = 0; i < stack_size; i++) {

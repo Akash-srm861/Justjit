@@ -53,7 +53,7 @@ jobs:
           set -ex
           # Install LLVM development packages from EPEL/CRB for manylinux_2_28 compatibility
           dnf install -y epel-release || true
-          dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || true
+          dnf config-manager --set-enabled powertools || true
           dnf install -y python3-devel llvm-devel llvm-static clang-devel zlib-devel libxml2-devel libffi-devel cmake ninja-build ncurses-devel || true
           # Verify LLVM installation
           llvm-config --version || echo "llvm-config not found"
