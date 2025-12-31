@@ -58,13 +58,6 @@ jobs:
           export PATH="$HOME/miniconda3/bin:$PATH"
           # Use only conda-forge to avoid Anaconda TOS issues
           conda install -y --override-channels -c conda-forge llvmdev=18.1.8 clangdev=18.1.8 zlib libxml2
-          # Set environment for CMake
-          LLVM_DIR=$(echo $HOME/miniconda3/lib/cmake/llvm)
-          CLANG_DIR=$(echo $HOME/miniconda3/lib/cmake/clang)
-          CMAKE_PREFIX_PATH=$HOME/miniconda3
-          echo "LLVM_DIR=$LLVM_DIR" >> $GITHUB_ENV
-          echo "Clang_DIR=$CLANG_DIR" >> $GITHUB_ENV
-          echo "CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH" >> $GITHUB_ENV
           llvm-config --version
         CIBW_ENVIRONMENT_LINUX: >-
           PATH=$HOME/miniconda3/bin:$PATH
@@ -95,10 +88,6 @@ jobs:
           export PATH="$HOME/miniconda3/bin:$PATH"
           # Use only conda-forge to avoid Anaconda TOS issues
           conda install -y --override-channels -c conda-forge llvmdev=18.1.8 clangdev=18.1.8 zlib libxml2
-          # Set environment for CMake
-          LLVM_DIR=$(echo $HOME/miniconda3/lib/cmake/llvm)
-          CLANG_DIR=$(echo $HOME/miniconda3/lib/cmake/clang)
-          CMAKE_PREFIX_PATH=$HOME/miniconda3
           llvm-config --version
         CIBW_ENVIRONMENT_LINUX: >-
           PATH=$HOME/miniconda3/bin:$PATH
