@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 
 # Find Python
-find_package(Python 3.13 COMPONENTS Interpreter Development REQUIRED)
+find_package(Python 3.13 COMPONENTS Interpreter Development.Module REQUIRED)
 
 # Link against Python3 to resolve symbols like PyRun_StringFlags on macOS
 # This is safe because we link PRIVATE and modern CMake handles the details
