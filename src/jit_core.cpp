@@ -1,4 +1,5 @@
 #include "jit_core.h"
+#include "raii_wrapper.h"
 #include "opcodes.h"
 #include "type_system.h"
 #include <llvm/IR/IRBuilder.h>
@@ -21,6 +22,26 @@
 #include <cstring>
 #include <sstream>
 #include <complex>
+
+// Clang includes for inline C compilation
+#ifdef JUSTJIT_HAS_CLANG
+#include <clang/Basic/DiagnosticOptions.h>
+#include <clang/Basic/TargetInfo.h>
+#include <clang/CodeGen/CodeGenAction.h>
+#include <clang/Frontend/CompilerInstance.h>
+#include <clang/Frontend/CompilerInvocation.h>
+#include <clang/Frontend/TextDiagnosticPrinter.h>
+#include <clang/Lex/PreprocessorOptions.h>
+#include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/VirtualFileSystem.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Program.h>
+#include <llvm/Support/raw_ostream.h>
+#include <llvm/TargetParser/Host.h>
+#include <fstream>
+#include <cstdlib>
+#include <sstream>
+#endif // JUSTJIT_HAS_CLANG
 
 // Python code object flags - define if not available
 // CO_ITERABLE_COROUTINE marks generators that can be used in await expressions
@@ -657,7 +678,299 @@ namespace justjit
             llvm::orc::ExecutorAddr::fromPtr(jit_box_bool),
             llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
 
+        // RAII helper symbols for inline C code
+        helper_symbols[es.intern("jit_gil_acquire")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_gil_acquire),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_gil_release")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_gil_release),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_gil_release_begin")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_gil_release_begin),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_gil_release_end")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_gil_release_end),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_pyobj_new")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_pyobj_new),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_pyobj_free")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_pyobj_free),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_pyobj_get")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_pyobj_get),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_buffer_new")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_buffer_new),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_buffer_free")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_buffer_free),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_buffer_data")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_buffer_data),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_buffer_size")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_buffer_size),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_py_to_long")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_py_to_long),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_py_to_double")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_py_to_double),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_long_to_py")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_long_to_py),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_double_to_py")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_double_to_py),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        helper_symbols[es.intern("jit_call_python")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_call_python),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // List operations
+        helper_symbols[es.intern("jit_list_new")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_list_new),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_list_size")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_list_size),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_list_get")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_list_get),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_list_set")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_list_set),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_list_append")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_list_append),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Dict operations
+        helper_symbols[es.intern("jit_dict_new")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_dict_new),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_dict_get")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_dict_get),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_dict_get_obj")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_dict_get_obj),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_dict_set")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_dict_set),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_dict_set_obj")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_dict_set_obj),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_dict_del")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_dict_del),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_dict_keys")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_dict_keys),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Tuple operations
+        helper_symbols[es.intern("jit_tuple_new")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_tuple_new),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_tuple_get")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_tuple_get),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_tuple_set")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_tuple_set),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Object attribute/method access
+        helper_symbols[es.intern("jit_getattr")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_getattr),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_setattr")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_setattr),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_hasattr")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_hasattr),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_call_method")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_call_method),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_call_method0")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_call_method0),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Reference counting
+        helper_symbols[es.intern("jit_incref")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_incref),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_decref")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_decref),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Module import
+        helper_symbols[es.intern("jit_import")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_import),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Sequence/iterator operations
+        helper_symbols[es.intern("jit_len")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_len),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_getitem")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_getitem),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_setitem")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_setitem),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_getitem_obj")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_getitem_obj),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_setitem_obj")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_setitem_obj),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Type checking
+        helper_symbols[es.intern("jit_is_list")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_is_list),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_is_dict")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_is_dict),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_is_tuple")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_is_tuple),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_is_int")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_is_int),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_is_float")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_is_float),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_is_str")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_is_str),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_is_none")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_is_none),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_is_callable")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_is_callable),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Constants
+        helper_symbols[es.intern("jit_none")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_none),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_true")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_true),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_false")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_false),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Error handling
+        helper_symbols[es.intern("jit_error_occurred")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_error_occurred),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_error_clear")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_error_clear),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_error_print")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_error_print),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // String conversion
+        helper_symbols[es.intern("jit_py_to_string")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_py_to_string),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_string_to_py")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_string_to_py),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Enhanced callbacks
+        helper_symbols[es.intern("jit_call1")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_call1),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_call2")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_call2),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_call3")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_call3),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_call_method1")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_call_method1),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_call_method2")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_call_method2),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Argument builders
+        helper_symbols[es.intern("jit_build_args1")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_build_args1),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_build_args2")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_build_args2),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_build_args3")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_build_args3),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_build_int_args1")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_build_int_args1),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_build_int_args2")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_build_int_args2),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_build_float_args1")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_build_float_args1),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_build_float_args2")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_build_float_args2),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Iterator support
+        helper_symbols[es.intern("jit_get_iter")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_get_iter),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_iter_next")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_iter_next),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_iter_check")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_iter_check),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Bytes support
+        helper_symbols[es.intern("jit_bytes_new")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_bytes_new),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_bytes_data")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_bytes_data),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_bytes_len")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_bytes_len),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
+        // Simplified Python expression evaluation
+        helper_symbols[es.intern("jit_py_eval")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_py_eval),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+        helper_symbols[es.intern("jit_py_exec")] = {
+            llvm::orc::ExecutorAddr::fromPtr(jit_py_exec),
+            llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+
         auto err = jd.define(llvm::orc::absoluteSymbols(helper_symbols));
+
+
+
         if (err)
         {
             llvm::errs() << "Failed to define helper symbols: " << toString(std::move(err)) << "\n";
@@ -8621,13 +8934,16 @@ namespace justjit
 
                     switch (instr.arg)
                     {
-                    case 0: // ADD
+                    case 0:  // ADD
+                    case 13: // INPLACE_ADD (+=)
                         result = builder.CreateAdd(first, second, "add");
                         break;
                     case 10: // SUB
+                    case 23: // INPLACE_SUB (-=)
                         result = builder.CreateSub(first, second, "sub");
                         break;
-                    case 5: // MUL
+                    case 5:  // MUL
+                    case 18: // INPLACE_MUL (*=)
                         result = builder.CreateMul(first, second, "mul");
                         break;
                     case 11: // TRUE_DIV
@@ -8803,6 +9119,14 @@ namespace justjit
 
                     int target_offset = instr.argval;
                     int next_offset = instructions[i + 1].offset;
+                    
+                    // Special case: if next instruction is JUMP_BACKWARD, branch directly to its target
+                    // This avoids creating a spurious intermediate block
+                    bool next_is_jump_backward = (instructions[i + 1].opcode == op::JUMP_BACKWARD);
+                    if (next_is_jump_backward)
+                    {
+                        next_offset = instructions[i + 1].argval; // Use JUMP_BACKWARD's target directly
+                    }
 
                     if (!jump_targets.count(target_offset))
                     {
@@ -8825,6 +9149,12 @@ namespace justjit
                         { // POP_JUMP_IF_TRUE
                             builder.CreateCondBr(bool_cond, jump_targets[target_offset], jump_targets[next_offset]);
                         }
+                    }
+                    
+                    // If we consumed the JUMP_BACKWARD, skip it
+                    if (next_is_jump_backward)
+                    {
+                        i++; // Skip the JUMP_BACKWARD since we already handled it
                     }
                 }
             }
@@ -9981,6 +10311,10 @@ namespace justjit
         // Jump targets for control flow
         std::unordered_map<int, llvm::BasicBlock *> jump_targets;
         jump_targets[0] = entry;
+        
+        // Track stack values for PHI nodes at merge points
+        // Maps target block offset -> vector of (incoming value, incoming block)
+        std::unordered_map<int, std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>>> block_incoming_values;
 
         // First pass: Create basic blocks for jump targets
         for (size_t i = 0; i < instructions.size(); ++i)
@@ -10045,11 +10379,45 @@ namespace justjit
             if (jump_targets.count(instr.offset) && jump_targets[instr.offset] != entry)
             {
                 llvm::BasicBlock *target_block = jump_targets[instr.offset];
+                
+                // Record incoming value from fallthrough path if stack not empty
+                if (!stack.empty() && !builder.GetInsertBlock()->getTerminator())
+                {
+                    block_incoming_values[instr.offset].push_back({stack.back(), builder.GetInsertBlock()});
+                }
+                
                 if (!builder.GetInsertBlock()->getTerminator())
                 {
                     builder.CreateBr(target_block);
                 }
                 builder.SetInsertPoint(target_block);
+                
+                // Create PHI node only if we have 2+ incoming values (actual merge point)
+                if (block_incoming_values.count(instr.offset) && 
+                    block_incoming_values[instr.offset].size() >= 2)
+                {
+                    auto& incoming = block_incoming_values[instr.offset];
+                    
+                    // Create PHI for merge
+                    llvm::PHINode *phi = builder.CreatePHI(i64_type, incoming.size(), "merge_phi");
+                    for (auto& [val, block] : incoming)
+                    {
+                        phi->addIncoming(val, block);
+                    }
+                    
+                    // Replace stack top with PHI (or push if stack was empty)
+                    if (!stack.empty())
+                    {
+                        stack.back() = phi;
+                    }
+                    else
+                    {
+                        stack.push_back(phi);
+                    }
+                    
+                    // Clear incoming values (only use once)
+                    block_incoming_values[instr.offset].clear();
+                }
             }
 
             if (instr.opcode == op::RESUME || instr.opcode == op::NOP || instr.opcode == op::CACHE || instr.opcode == op::TO_BOOL)
@@ -10170,6 +10538,13 @@ namespace justjit
                     int target_offset = instr.argval;
                     llvm::BasicBlock *false_block = llvm::BasicBlock::Create(*local_context, "false_" + std::to_string(i), func);
                     llvm::BasicBlock *true_block = jump_targets.count(target_offset) ? jump_targets[target_offset] : entry;
+
+                    // For short-circuit or: if stack not empty, record value for PHI at target
+                    if (!stack.empty())
+                    {
+                        llvm::Value *stack_top = stack.back();
+                        block_incoming_values[target_offset].push_back({stack_top, builder.GetInsertBlock()});
+                    }
 
                     builder.CreateCondBr(is_true, true_block, false_block);
                     builder.SetInsertPoint(false_block);
@@ -11278,21 +11653,71 @@ namespace justjit
                     llvm::Value *rhs = stack.back(); stack.pop_back();
                     llvm::Value *lhs = stack.back(); stack.pop_back();
                     
-                    // Ensure both are f64
-                    if (lhs->getType()->isIntegerTy())
-                        lhs = builder.CreateSIToFP(lhs, f64_type);
-                    if (rhs->getType()->isIntegerTy())
-                        rhs = builder.CreateSIToFP(rhs, f64_type);
+                    // Check if this is pointer arithmetic (ptr + int or ptr - int)
+                    bool lhs_is_ptr = lhs->getType()->isPointerTy();
+                    bool rhs_is_ptr = rhs->getType()->isPointerTy();
                     
-                    llvm::Value *result = nullptr;
-                    switch (instr.arg) {
-                        case 0: result = builder.CreateFAdd(lhs, rhs); break;
-                        case 10: result = builder.CreateFSub(lhs, rhs); break;
-                        case 5: result = builder.CreateFMul(lhs, rhs); break;
-                        case 11: result = builder.CreateFDiv(lhs, rhs); break;
-                        default: result = lhs;
+                    if (lhs_is_ptr && !rhs_is_ptr) {
+                        // Pointer arithmetic: ptr + offset or ptr - offset
+                        // Convert rhs to i64 if needed
+                        llvm::Value *offset = rhs;
+                        if (offset->getType()->isDoubleTy())
+                            offset = builder.CreateFPToSI(offset, i64_type);
+                        
+                        llvm::Value *result = nullptr;
+                        switch (instr.arg) {
+                            case 0: // Add: ptr + offset
+                                result = builder.CreateGEP(builder.getInt8Ty(), lhs, offset, "ptr_add");
+                                break;
+                            case 10: // Sub: ptr - offset (use negative offset)
+                                offset = builder.CreateNeg(offset, "neg_offset");
+                                result = builder.CreateGEP(builder.getInt8Ty(), lhs, offset, "ptr_sub");
+                                break;
+                            default:
+                                result = lhs;
+                        }
+                        stack.push_back(result);
+                    } else if (!lhs_is_ptr && !rhs_is_ptr) {
+                        // Regular numeric operation
+                        // Ensure both are f64
+                        if (lhs->getType()->isIntegerTy())
+                            lhs = builder.CreateSIToFP(lhs, f64_type);
+                        if (rhs->getType()->isIntegerTy())
+                            rhs = builder.CreateSIToFP(rhs, f64_type);
+                        
+                        llvm::Value *result = nullptr;
+                        switch (instr.arg) {
+                            case 0: result = builder.CreateFAdd(lhs, rhs); break;
+                            case 10: result = builder.CreateFSub(lhs, rhs); break;
+                            case 5: result = builder.CreateFMul(lhs, rhs); break;
+                            case 11: result = builder.CreateFDiv(lhs, rhs); break;
+                            default: result = lhs;
+                        }
+                        stack.push_back(result);
+                    } else {
+                        // Both are pointers or rhs is ptr - convert to integers for arithmetic
+                        llvm::Value *lhs_int = lhs_is_ptr ? builder.CreatePtrToInt(lhs, i64_type) : lhs;
+                        llvm::Value *rhs_int = rhs_is_ptr ? builder.CreatePtrToInt(rhs, i64_type) : rhs;
+                        
+                        if (lhs_int->getType()->isDoubleTy())
+                            lhs_int = builder.CreateFPToSI(lhs_int, i64_type);
+                        if (rhs_int->getType()->isDoubleTy())
+                            rhs_int = builder.CreateFPToSI(rhs_int, i64_type);
+                        
+                        llvm::Value *result = nullptr;
+                        switch (instr.arg) {
+                            case 0: result = builder.CreateAdd(lhs_int, rhs_int); break;
+                            case 10: result = builder.CreateSub(lhs_int, rhs_int); break;
+                            case 5: result = builder.CreateMul(lhs_int, rhs_int); break;
+                            default: result = lhs_int;
+                        }
+                        
+                        // If original lhs was ptr, convert result back to ptr
+                        if (lhs_is_ptr)
+                            result = builder.CreateIntToPtr(result, ptr_type);
+                        
+                        stack.push_back(result);
                     }
-                    stack.push_back(result);
                 }
             }
             else if (instr.opcode == op::RETURN_VALUE) {
@@ -15798,4 +16223,1353 @@ namespace justjit
         return (PyObject*)coro;
     }
 
+// =========================================================================
+// Inline C Compiler Implementation
+// =========================================================================
+#ifdef JUSTJIT_HAS_CLANG
+
+    // RAII wrapper for clang diagnostics (LLVM 22 API)
+    class DiagnosticsRAII {
+    public:
+        DiagnosticsRAII() 
+            : diag_opts_(),
+              diag_printer_(llvm::errs(), diag_opts_),
+              diag_id_(new clang::DiagnosticIDs()),
+              diags_(diag_id_, diag_opts_, &diag_printer_, false)
+        {
+        }
+
+        ~DiagnosticsRAII() {
+            // Resources cleaned up automatically
+        }
+
+        clang::DiagnosticsEngine& get() { return diags_; }
+
+    private:
+        clang::DiagnosticOptions diag_opts_;
+        clang::TextDiagnosticPrinter diag_printer_;
+        llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs> diag_id_;
+        clang::DiagnosticsEngine diags_;
+    };
+
+    // =========================================================================
+    // JITCallable - Native Python callable for JIT-compiled C functions
+    // =========================================================================
+    // Uses Python C API directly instead of nanobind for pure native callable
+    // =========================================================================
+    
+    // Signature type encoding - supports multiple integer sizes
+    enum class JITCallableReturnType { INT64, INT32, DOUBLE, VOID, PTR };
+    
+    // Per-parameter type encoding (4 bits per param, 8 params max = 32 bits)
+    // Values: 0=INT64, 1=INT32, 2=DOUBLE, 3=FLOAT, 4=PTR
+    enum JITParamTypeCode { 
+        PARAM_INT64 = 0,
+        PARAM_INT32 = 1, 
+        PARAM_DOUBLE = 2, 
+        PARAM_FLOAT = 3, 
+        PARAM_PTR = 4 
+    };
+    
+    // JITCallable object struct
+    struct JITCallableObject {
+        PyObject_HEAD
+        uint64_t func_ptr;                  // Pointer to JIT-compiled function
+        JITCallableReturnType return_type;  // Return type
+        int param_count;                    // Number of parameters
+        uint32_t param_type_mask;           // Per-param types (4 bits each)
+        char* name;                         // Function name (for repr)
+        bool is_varargs;                    // For warning purposes
+        bool is_struct_ret;                 // For error message
+    };
+
+    
+    // Forward declarations
+    static void JITCallable_dealloc(JITCallableObject* self);
+    static PyObject* JITCallable_repr(JITCallableObject* self);
+    static PyObject* JITCallable_call(JITCallableObject* self, PyObject* args, PyObject* kwargs);
+    
+    // Python type object for JIT callables
+    static PyTypeObject JITCallable_Type = {
+        PyVarObject_HEAD_INIT(NULL, 0)
+        "justjit.JITCallable",              // tp_name
+        sizeof(JITCallableObject),          // tp_basicsize
+        0,                                  // tp_itemsize
+        (destructor)JITCallable_dealloc,    // tp_dealloc
+        0,                                  // tp_vectorcall_offset
+        0,                                  // tp_getattr
+        0,                                  // tp_setattr
+        0,                                  // tp_as_async
+        (reprfunc)JITCallable_repr,         // tp_repr
+        0,                                  // tp_as_number
+        0,                                  // tp_as_sequence  
+        0,                                  // tp_as_mapping
+        0,                                  // tp_hash
+        (ternaryfunc)JITCallable_call,      // tp_call
+        0,                                  // tp_str
+        0,                                  // tp_getattro
+        0,                                  // tp_setattro
+        0,                                  // tp_as_buffer
+        Py_TPFLAGS_DEFAULT,                 // tp_flags
+        "JIT-compiled C callable",          // tp_doc
+    };
+    
+    // Deallocate callable object
+    static void JITCallable_dealloc(JITCallableObject* self) {
+        if (self->name) {
+            PyMem_Free(self->name);
+        }
+        Py_TYPE(self)->tp_free((PyObject*)self);
+    }
+    
+    // Repr for callable
+    static PyObject* JITCallable_repr(JITCallableObject* self) {
+        return PyUnicode_FromFormat("<justjit.JITCallable '%s' at %p>", 
+                                    self->name ? self->name : "?", 
+                                    (void*)self->func_ptr);
+    }
+    
+    // Call implementation - invokes JIT-compiled function
+    static PyObject* JITCallable_call(JITCallableObject* self, PyObject* args, PyObject* kwargs) {
+        Py_ssize_t nargs = PyTuple_Size(args);
+        if (nargs != self->param_count) {
+            PyErr_Format(PyExc_TypeError, "%s() takes %d argument(s) but %zd were given",
+                        self->name ? self->name : "function", self->param_count, nargs);
+            return NULL;
+        }
+        
+        // Check for unsupported function types
+        if (self->is_struct_ret) {
+            PyErr_Format(PyExc_NotImplementedError, 
+                "%s() returns a struct which is not supported. "
+                "Consider returning via pointer parameter instead.",
+                self->name ? self->name : "function");
+            return NULL;
+        }
+        
+        // Warn about varargs (only on first call could log)
+        // For now, varargs will just fail at call time if wrong args used
+        
+        // Parse arguments based on per-param types from param_type_mask
+        // Each param uses 4 bits: 0=INT64, 1=INT32, 2=DOUBLE, 3=FLOAT, 4=PTR
+        int64_t iargs[8] = {0};
+        double dargs[8] = {0};
+        
+        for (Py_ssize_t i = 0; i < nargs && i < 8; i++) {
+            PyObject* arg = PyTuple_GetItem(args, i);
+            int param_type = (self->param_type_mask >> (i * 4)) & 0xF;
+            
+            // Always populate BOTH arrays
+            // For wrappers: store double bits in iargs for proper passing
+            if (PyFloat_Check(arg)) {
+                dargs[i] = PyFloat_AsDouble(arg);
+                // Bit-cast double to int64 for wrapper functions
+                memcpy(&iargs[i], &dargs[i], sizeof(double));
+            } else if (PyLong_Check(arg)) {
+                iargs[i] = PyLong_AsLongLong(arg);
+                dargs[i] = (double)iargs[i];
+            } else if (arg == Py_None) {
+                iargs[i] = 0;
+                dargs[i] = 0.0;
+            } else {
+                // Try capsule for pointer types
+                void* ptr = PyCapsule_GetPointer(arg, NULL);
+                if (ptr) {
+                    iargs[i] = reinterpret_cast<int64_t>(ptr);
+                    dargs[i] = 0.0;
+                } else {
+                    PyErr_Clear();
+                    PyErr_Format(PyExc_TypeError, "argument %zd must be int, float, or None", i);
+                    return NULL;
+                }
+            }
+        }
+
+        
+        // Determine if all params are same type for optimized calling
+        bool all_int = true, all_float = true;
+        for (int i = 0; i < self->param_count && i < 8; i++) {
+            int param_type = (self->param_type_mask >> (i * 4)) & 0xF;
+            if (param_type == PARAM_DOUBLE || param_type == PARAM_FLOAT) {
+                all_int = false;
+            } else {
+                all_float = false;
+            }
+        }
+
+        
+
+        // Call based on return type and param type patterns
+        // Note: Mixed int/float params require the same positional slots
+        // We use all_float to decide whether to use double casts
+        
+        if (self->return_type == JITCallableReturnType::INT64) {
+            int64_t result;
+            if (all_float) {
+                switch (self->param_count) {
+                    case 0: result = reinterpret_cast<int64_t(*)()>(self->func_ptr)(); break;
+                    case 1: result = reinterpret_cast<int64_t(*)(double)>(self->func_ptr)(dargs[0]); break;
+                    case 2: result = reinterpret_cast<int64_t(*)(double,double)>(self->func_ptr)(dargs[0], dargs[1]); break;
+                    case 3: result = reinterpret_cast<int64_t(*)(double,double,double)>(self->func_ptr)(dargs[0], dargs[1], dargs[2]); break;
+                    case 4: result = reinterpret_cast<int64_t(*)(double,double,double,double)>(self->func_ptr)(dargs[0], dargs[1], dargs[2], dargs[3]); break;
+                    default: PyErr_SetString(PyExc_NotImplementedError, "too many parameters"); return NULL;
+                }
+            } else {
+                // All int or mixed - use int signature
+                switch (self->param_count) {
+                    case 0: result = reinterpret_cast<int64_t(*)()>(self->func_ptr)(); break;
+                    case 1: result = reinterpret_cast<int64_t(*)(int64_t)>(self->func_ptr)(iargs[0]); break;
+                    case 2: result = reinterpret_cast<int64_t(*)(int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1]); break;
+                    case 3: result = reinterpret_cast<int64_t(*)(int64_t,int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1], iargs[2]); break;
+                    case 4: result = reinterpret_cast<int64_t(*)(int64_t,int64_t,int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1], iargs[2], iargs[3]); break;
+                    default: PyErr_SetString(PyExc_NotImplementedError, "too many parameters"); return NULL;
+                }
+            }
+            return PyLong_FromLongLong(result);
+        }
+        else if (self->return_type == JITCallableReturnType::INT32) {
+            int32_t result;
+            if (all_float) {
+                switch (self->param_count) {
+                    case 0: result = reinterpret_cast<int32_t(*)()>(self->func_ptr)(); break;
+                    case 1: result = reinterpret_cast<int32_t(*)(double)>(self->func_ptr)(dargs[0]); break;
+                    case 2: result = reinterpret_cast<int32_t(*)(double,double)>(self->func_ptr)(dargs[0], dargs[1]); break;
+                    case 3: result = reinterpret_cast<int32_t(*)(double,double,double)>(self->func_ptr)(dargs[0], dargs[1], dargs[2]); break;
+                    case 4: result = reinterpret_cast<int32_t(*)(double,double,double,double)>(self->func_ptr)(dargs[0], dargs[1], dargs[2], dargs[3]); break;
+                    default: PyErr_SetString(PyExc_NotImplementedError, "too many parameters"); return NULL;
+                }
+            } else {
+                // All int or mixed - use int signature
+                switch (self->param_count) {
+                    case 0: result = reinterpret_cast<int32_t(*)()>(self->func_ptr)(); break;
+                    case 1: result = reinterpret_cast<int32_t(*)(int64_t)>(self->func_ptr)(iargs[0]); break;
+                    case 2: result = reinterpret_cast<int32_t(*)(int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1]); break;
+                    case 3: result = reinterpret_cast<int32_t(*)(int64_t,int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1], iargs[2]); break;
+                    case 4: result = reinterpret_cast<int32_t(*)(int64_t,int64_t,int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1], iargs[2], iargs[3]); break;
+                    default: PyErr_SetString(PyExc_NotImplementedError, "too many parameters"); return NULL;
+                }
+            }
+            return PyLong_FromLong(result);
+        }
+        else if (self->return_type == JITCallableReturnType::DOUBLE) {
+            double result;
+            if (all_int) {
+                switch (self->param_count) {
+                    case 0: result = reinterpret_cast<double(*)()>(self->func_ptr)(); break;
+                    case 1: result = reinterpret_cast<double(*)(int64_t)>(self->func_ptr)(iargs[0]); break;
+                    case 2: result = reinterpret_cast<double(*)(int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1]); break;
+                    case 3: result = reinterpret_cast<double(*)(int64_t,int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1], iargs[2]); break;
+                    case 4: result = reinterpret_cast<double(*)(int64_t,int64_t,int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1], iargs[2], iargs[3]); break;
+                    default: PyErr_SetString(PyExc_NotImplementedError, "too many parameters"); return NULL;
+                }
+            } else {
+                // All float or mixed - use double signature
+                switch (self->param_count) {
+                    case 0: result = reinterpret_cast<double(*)()>(self->func_ptr)(); break;
+                    case 1: result = reinterpret_cast<double(*)(double)>(self->func_ptr)(dargs[0]); break;
+                    case 2: result = reinterpret_cast<double(*)(double,double)>(self->func_ptr)(dargs[0], dargs[1]); break;
+                    case 3: result = reinterpret_cast<double(*)(double,double,double)>(self->func_ptr)(dargs[0], dargs[1], dargs[2]); break;
+                    case 4: result = reinterpret_cast<double(*)(double,double,double,double)>(self->func_ptr)(dargs[0], dargs[1], dargs[2], dargs[3]); break;
+                    default: PyErr_SetString(PyExc_NotImplementedError, "too many parameters"); return NULL;
+                }
+            }
+            return PyFloat_FromDouble(result);
+        }
+        else if (self->return_type == JITCallableReturnType::VOID) {
+            if (all_float) {
+                switch (self->param_count) {
+                    case 0: reinterpret_cast<void(*)()>(self->func_ptr)(); break;
+                    case 1: reinterpret_cast<void(*)(double)>(self->func_ptr)(dargs[0]); break;
+                    case 2: reinterpret_cast<void(*)(double,double)>(self->func_ptr)(dargs[0], dargs[1]); break;
+                    default: PyErr_SetString(PyExc_NotImplementedError, "too many parameters"); return NULL;
+                }
+            } else {
+                switch (self->param_count) {
+                    case 0: reinterpret_cast<void(*)()>(self->func_ptr)(); break;
+                    case 1: reinterpret_cast<void(*)(int64_t)>(self->func_ptr)(iargs[0]); break;
+                    case 2: reinterpret_cast<void(*)(int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1]); break;
+                    default: PyErr_SetString(PyExc_NotImplementedError, "too many parameters"); return NULL;
+                }
+            }
+            Py_RETURN_NONE;
+        }
+        else if (self->return_type == JITCallableReturnType::PTR) {
+            void* result;
+            switch (self->param_count) {
+                case 0: result = reinterpret_cast<void*(*)()>(self->func_ptr)(); break;
+                case 1: result = reinterpret_cast<void*(*)(int64_t)>(self->func_ptr)(iargs[0]); break;
+                case 2: result = reinterpret_cast<void*(*)(int64_t,int64_t)>(self->func_ptr)(iargs[0], iargs[1]); break;
+                default: PyErr_SetString(PyExc_NotImplementedError, "too many parameters"); return NULL;
+            }
+            return PyLong_FromUnsignedLongLong(reinterpret_cast<uint64_t>(result));
+        }
+        
+        PyErr_SetString(PyExc_RuntimeError, "Unknown return type");
+        return NULL;
+
+    }
+    
+    // Create a new JITCallable object
+    static PyObject* JITCallable_New(uint64_t func_ptr, JITCallableReturnType ret_type, 
+                                     int param_count, uint32_t param_type_mask, 
+                                     const char* name, bool is_varargs, bool is_struct_ret) {
+        // Ensure type is ready
+        static bool type_ready = false;
+        if (!type_ready) {
+            if (PyType_Ready(&JITCallable_Type) < 0) {
+                return NULL;
+            }
+            type_ready = true;
+        }
+        
+        JITCallableObject* self = PyObject_New(JITCallableObject, &JITCallable_Type);
+        if (!self) return NULL;
+        
+        self->func_ptr = func_ptr;
+        self->return_type = ret_type;
+        self->param_count = param_count;
+        self->param_type_mask = param_type_mask;
+        self->is_varargs = is_varargs;
+        self->is_struct_ret = is_struct_ret;
+        
+        if (name) {
+            size_t len = strlen(name) + 1;
+            self->name = (char*)PyMem_Malloc(len);
+            if (self->name) {
+                memcpy(self->name, name, len);
+            }
+        } else {
+            self->name = NULL;
+        }
+        
+        return (PyObject*)self;
+    }
+
+
+    InlineCCompiler::InlineCCompiler(JITCore* jit_core)
+        : jit_core_(jit_core)
+    {
+    }
+
+    InlineCCompiler::~InlineCCompiler()
+    {
+        // RAII: resources cleaned up automatically
+    }
+
+    void InlineCCompiler::add_include_path(const std::string& path)
+    {
+        include_paths_.push_back(path);
+    }
+
+    std::string InlineCCompiler::generate_variable_declarations(nb::dict captured_vars)
+    {
+        std::stringstream ss;
+
+        // Use Python C API for iteration to avoid nanobind cast issues
+        PyObject* py_dict = captured_vars.ptr();
+        PyObject* key;
+        PyObject* value_obj;
+        Py_ssize_t pos = 0;
+        
+        while (PyDict_Next(py_dict, &pos, &key, &value_obj)) {
+            // Get key as string
+            PyObject* key_str = PyObject_Str(key);
+            if (!key_str) continue;
+            const char* name_cstr = PyUnicode_AsUTF8(key_str);
+            if (!name_cstr) {
+                Py_DECREF(key_str);
+                continue;
+            }
+            std::string name(name_cstr);
+            Py_DECREF(key_str);
+            
+            // Wrap value for type checking
+            nb::object value = nb::borrow<nb::object>(value_obj);
+
+            // Determine C type from Python type
+            // Check bool BEFORE int since Python bool is a subclass of int
+            if (nb::isinstance<nb::bool_>(value)) {
+                int val = PyObject_IsTrue(value.ptr());
+                ss << "int " << name << " = " << val << ";\n";
+            }
+            else if (nb::isinstance<nb::int_>(value)) {
+                // Use Python C API directly to avoid nanobind cast issues
+                long long val = PyLong_AsLongLong(value.ptr());
+                ss << "long long " << name << " = " << val << "LL;\n";
+            }
+            else if (nb::isinstance<nb::float_>(value)) {
+                // Use Python C API directly
+                double val = PyFloat_AsDouble(value.ptr());
+                ss << "double " << name << " = " << val << ";\n";
+            }
+            else if (nb::isinstance<nb::str>(value)) {
+                std::string val = nb::cast<std::string>(value);
+                // Escape special characters in string
+                std::string escaped;
+                for (char c : val) {
+                    if (c == '\\') escaped += "\\\\";
+                    else if (c == '"') escaped += "\\\"";
+                    else if (c == '\n') escaped += "\\n";
+                    else if (c == '\r') escaped += "\\r";
+                    else if (c == '\t') escaped += "\\t";
+                    else escaped += c;
+                }
+                ss << "const char* " << name << " = \"" << escaped << "\";\n";
+            }
+            else if (value.is_none()) {
+                ss << "void* " << name << " = (void*)0;\n";
+            }
+            else if (nb::isinstance<nb::list>(value)) {
+                // For lists, provide both:
+                // 1. The PyObject* pointer for Python API access (jit_list_size, etc.)
+                // 2. Optionally, a C array for fast element access if homogeneous
+                PyObject* ptr = value.ptr();
+                Py_INCREF(ptr);
+                ss << "void* " << name << " = (void*)" << reinterpret_cast<uintptr_t>(ptr) << "ULL;\n";
+                
+                // Also generate C array version for homogeneous numeric lists
+                nb::list lst = nb::cast<nb::list>(value);
+                if (lst.size() > 0) {
+                    nb::object first = lst[0];
+                    if (nb::isinstance<nb::int_>(first)) {
+                        ss << "long long " << name << "_arr[] = {";
+                        for (size_t i = 0; i < lst.size(); i++) {
+                            if (i > 0) ss << ", ";
+                            ss << nb::cast<int64_t>(lst[i]);
+                        }
+                        ss << "};\n";
+                        ss << "long long " << name << "_len = " << lst.size() << ";\n";
+                    }
+                    else if (nb::isinstance<nb::float_>(first)) {
+                        ss << "double " << name << "_arr[] = {";
+                        for (size_t i = 0; i < lst.size(); i++) {
+                            if (i > 0) ss << ", ";
+                            ss << nb::cast<double>(lst[i]);
+                        }
+                        ss << "};\n";
+                        ss << "long long " << name << "_len = " << lst.size() << ";\n";
+                    }
+                }
+            }
+
+            else if (nb::isinstance<nb::tuple>(value)) {
+                // For tuples, same as lists
+                nb::tuple tpl = nb::cast<nb::tuple>(value);
+                if (tpl.size() > 0) {
+                    nb::object first = tpl[0];
+                    if (nb::isinstance<nb::int_>(first)) {
+                        ss << "long long " << name << "[] = {";
+                        for (size_t i = 0; i < tpl.size(); i++) {
+                            if (i > 0) ss << ", ";
+                            ss << nb::cast<int64_t>(tpl[i]);
+                        }
+                        ss << "};\n";
+                        ss << "long long " << name << "_len = " << tpl.size() << ";\n";
+                    }
+                    else if (nb::isinstance<nb::float_>(first)) {
+                        ss << "double " << name << "[] = {";
+                        for (size_t i = 0; i < tpl.size(); i++) {
+                            if (i > 0) ss << ", ";
+                            ss << nb::cast<double>(tpl[i]);
+                        }
+                        ss << "};\n";
+                        ss << "long long " << name << "_len = " << tpl.size() << ";\n";
+                    }
+                }
+            }
+            // NumPy arrays - detect via buffer protocol and generate direct pointer access
+            // Uses buffer protocol at capture time to get pointer addresses as constants
+            else if (PyObject_CheckBuffer(value.ptr())) {
+                PyObject* ptr = value.ptr();
+                
+                // Get buffer info to determine element type and data pointer
+                Py_buffer view;
+                if (PyObject_GetBuffer(ptr, &view, PyBUF_SIMPLE | PyBUF_FORMAT) == 0) {
+                    // Get the actual data pointer and size NOW (at capture time)
+                    uintptr_t data_ptr = reinterpret_cast<uintptr_t>(view.buf);
+                    Py_ssize_t data_len = view.len / view.itemsize;
+                    
+                    ss << "// NumPy array: " << name << " (captured at compile time)\n";
+                    ss << "long long " << name << "_len = " << data_len << "LL;\n";
+                    
+                    // Generate typed pointer based on format
+                    const char* fmt = view.format ? view.format : "B";
+                    if (fmt[0] == 'd') {  // float64/double
+                        ss << "double* " << name << " = (double*)" << data_ptr << "ULL;\n";
+                    } else if (fmt[0] == 'f') {  // float32
+                        ss << "float* " << name << " = (float*)" << data_ptr << "ULL;\n";
+                    } else if (fmt[0] == 'l' || fmt[0] == 'q') {  // long/longlong
+                        ss << "long long* " << name << " = (long long*)" << data_ptr << "ULL;\n";
+                    } else if (fmt[0] == 'i') {  // int32
+                        ss << "int* " << name << " = (int*)" << data_ptr << "ULL;\n";
+                    } else {
+                        // Default to void* for unknown types
+                        ss << "void* " << name << " = (void*)" << data_ptr << "ULL;\n";
+                    }
+                    
+                    PyBuffer_Release(&view);
+                } else {
+                    // Fallback if buffer info failed - use original name
+                    Py_INCREF(ptr);
+                    ss << "void* " << name << " = (void*)" << reinterpret_cast<uintptr_t>(ptr) << "ULL;\n";
+                }
+            }
+            // For other generic objects, pass as PyObject pointer
+            // Use the original variable name so C code can access it directly
+            else {
+                PyObject* ptr = value.ptr();
+                // Keep a reference to prevent Python from garbage collecting
+                Py_INCREF(ptr);
+                ss << "void* " << name << " = (void*)" << reinterpret_cast<uintptr_t>(ptr) << "ULL;\n";
+            }
+        }
+
+
+        return ss.str();
+    }
+
+    nb::dict InlineCCompiler::extract_exported_variables(llvm::Module* module)
+    {
+        nb::dict result;
+
+        // Extract global variables from the module
+        for (auto& gv : module->globals()) {
+            if (gv.hasInitializer() && !gv.isConstant()) {
+                std::string name = gv.getName().str();
+                // Skip internal variables
+                if (name.empty() || name[0] == '.') continue;
+
+                // Get initializer value
+                llvm::Constant* init = gv.getInitializer();
+                if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(init)) {
+                    result[name.c_str()] = nb::int_(ci->getSExtValue());
+                }
+                else if (auto* cf = llvm::dyn_cast<llvm::ConstantFP>(init)) {
+                    result[name.c_str()] = nb::float_(cf->getValueAPF().convertToDouble());
+                }
+            }
+        }
+
+        return result;
+    }
+
+    nb::dict InlineCCompiler::compile_and_execute(
+        const std::string& code,
+        const std::string& lang,
+        nb::dict captured_vars)
+    {
+        // Generate variable declarations from captured Python vars
+        std::string var_decls = generate_variable_declarations(captured_vars);
+
+        // Build complete C code with extern declarations for RAII helpers
+        std::string full_code = R"(
+// ============================================================================
+// JustJIT Python-C Interop API
+// These functions allow inline C/C++ code to interact with Python objects
+// ============================================================================
+
+// GIL Management
+extern void* jit_gil_acquire(void);
+extern void jit_gil_release(void* guard);
+extern void* jit_gil_release_begin(void);
+extern void jit_gil_release_end(void* save);
+
+// NumPy Buffer Access
+extern void* jit_buffer_new(void* arr);
+extern void jit_buffer_free(void* buf);
+extern void* jit_buffer_data(void* buf);
+extern long long jit_buffer_size(void* buf);
+
+// Type Conversions
+extern long long jit_py_to_long(void* obj);
+extern double jit_py_to_double(void* obj);
+extern const char* jit_py_to_string(void* obj);
+extern void* jit_long_to_py(long long val);
+extern void* jit_double_to_py(double val);
+extern void* jit_string_to_py(const char* val);
+
+// Python Function Call
+extern void* jit_call_python(void* func, void* args);
+
+// List Operations
+extern void* jit_list_new(long long size);
+extern long long jit_list_size(void* list);
+extern void* jit_list_get(void* list, long long index);
+extern int jit_list_set(void* list, long long index, void* item);
+extern int jit_list_append(void* list, void* item);
+
+// Dict Operations
+extern void* jit_dict_new(void);
+extern void* jit_dict_get(void* dict, const char* key);
+extern void* jit_dict_get_obj(void* dict, void* key);
+extern int jit_dict_set(void* dict, const char* key, void* val);
+extern int jit_dict_set_obj(void* dict, void* key, void* val);
+extern int jit_dict_del(void* dict, const char* key);
+extern void* jit_dict_keys(void* dict);
+
+// Tuple Operations
+extern void* jit_tuple_new(long long size);
+extern void* jit_tuple_get(void* tuple, long long index);
+extern int jit_tuple_set(void* tuple, long long index, void* item);
+
+// Object Attribute/Method Access
+extern void* jit_getattr(void* obj, const char* name);
+extern int jit_setattr(void* obj, const char* name, void* val);
+extern int jit_hasattr(void* obj, const char* name);
+extern void* jit_call_method(void* obj, const char* method, void* args);
+extern void* jit_call_method0(void* obj, const char* method);
+
+// Reference Counting
+extern void jit_incref(void* obj);
+extern void jit_decref(void* obj);
+
+// Module Import
+extern void* jit_import(const char* name);
+
+// Sequence/Iterator Operations
+extern long long jit_len(void* obj);
+extern void* jit_getitem(void* obj, long long index);
+extern int jit_setitem(void* obj, long long index, void* val);
+extern void* jit_getitem_obj(void* obj, void* key);
+extern int jit_setitem_obj(void* obj, void* key, void* val);
+
+// Type Checking
+extern int jit_is_list(void* obj);
+extern int jit_is_dict(void* obj);
+extern int jit_is_tuple(void* obj);
+extern int jit_is_int(void* obj);
+extern int jit_is_float(void* obj);
+extern int jit_is_str(void* obj);
+extern int jit_is_none(void* obj);
+extern int jit_is_callable(void* obj);
+
+// Constants
+extern void* jit_none(void);
+extern void* jit_true(void);
+extern void* jit_false(void);
+
+// Error Handling
+extern int jit_error_occurred(void);
+extern void jit_error_clear(void);
+extern void jit_error_print(void);
+
+// Enhanced Callbacks - Call Python functions with arguments
+extern void* jit_call1(void* func, void* arg);
+extern void* jit_call2(void* func, void* arg1, void* arg2);
+extern void* jit_call3(void* func, void* arg1, void* arg2, void* arg3);
+extern void* jit_call_method1(void* obj, const char* method, void* arg);
+extern void* jit_call_method2(void* obj, const char* method, void* arg1, void* arg2);
+
+// Argument Builders
+extern void* jit_build_args1(void* arg);
+extern void* jit_build_args2(void* arg1, void* arg2);
+extern void* jit_build_args3(void* arg1, void* arg2, void* arg3);
+extern void* jit_build_int_args1(long long v1);
+extern void* jit_build_int_args2(long long v1, long long v2);
+extern void* jit_build_float_args1(double v1);
+extern void* jit_build_float_args2(double v1, double v2);
+
+// Iterator Support
+extern void* jit_get_iter(void* obj);
+extern void* jit_iter_next(void* iter);
+extern int jit_iter_check(void* obj);
+
+// Bytes Support
+extern void* jit_bytes_new(const char* data, long long len);
+extern const char* jit_bytes_data(void* bytes);
+extern long long jit_bytes_len(void* bytes);
+
+// Simplified Python Expression Evaluation
+extern void* jit_py_eval(const char* expr, void* locals);
+extern void* jit_py_exec(const char* code, void* locals);
+
+// ============================================================================
+// Convenience Macros for Simplified API
+// ============================================================================
+#define py_eval(expr) jit_py_eval(expr, 0)
+#define py_exec(code) jit_py_exec(code, 0)
+#define py_import(name) jit_import(name)
+#define py_call0(obj, method) jit_call_method0(obj, method)
+#define py_call1(obj, method, arg) jit_call_method1(obj, method, arg)
+#define py_attr(obj, name) jit_getattr(obj, name)
+
+// ============================================================================
+// RAII Scope Guards using __attribute__((cleanup))
+// These macros ensure automatic cleanup when variables go out of scope
+// Works with GCC, Clang, and MSVC (via extensions)
+// ============================================================================
+
+// Cleanup function for PyObject pointers
+static inline void __jit_pyobj_cleanup(void** ptr) {
+    if (*ptr) jit_decref(*ptr);
+}
+
+// Cleanup function for buffer handles
+static inline void __jit_buffer_cleanup(void** ptr) {
+    if (*ptr) jit_buffer_free(*ptr);
+}
+
+// Cleanup function for GIL release state
+static inline void __jit_gil_cleanup(void** ptr) {
+    if (*ptr) jit_gil_release_end(*ptr);
+}
+
+// ============================================================================
+// Scoped macros for automatic resource management
+// ============================================================================
+
+// MSVC doesn't support __attribute__((cleanup)), use different approach
+#if defined(_MSC_VER)
+// On MSVC, users must manually free - provide helper functions
+#define JIT_SCOPED_PYOBJ(name, expr) void* name = (expr)
+#define JIT_SCOPED_BUFFER(name, arr) void* name##_buf = jit_buffer_new(arr)
+#define JIT_SCOPED_BUFFER_DATA(name, type) ((type*)jit_buffer_data(name##_buf))
+#else
+// GCC/Clang: automatic cleanup at scope exit
+#define JIT_SCOPED_PYOBJ(name, expr) \
+    void* name __attribute__((cleanup(__jit_pyobj_cleanup))) = (expr)
+
+#define JIT_SCOPED_BUFFER(name, arr) \
+    void* name##_buf __attribute__((cleanup(__jit_buffer_cleanup))) = jit_buffer_new(arr)
+
+#define JIT_SCOPED_BUFFER_DATA(name, type) ((type*)jit_buffer_data(name##_buf))
+#endif
+
+// GIL management with automatic reacquisition
+#if defined(_MSC_VER)
+#define JIT_NOGIL_BEGIN void* __jit_gil_save = jit_gil_release_begin()
+#define JIT_NOGIL_END jit_gil_release_end(__jit_gil_save)
+#else
+#define JIT_NOGIL_SCOPE \
+    void* __jit_gil_save __attribute__((cleanup(__jit_gil_cleanup))) = jit_gil_release_begin()
+#define JIT_NOGIL_BEGIN void* __jit_gil_save = jit_gil_release_begin()
+#define JIT_NOGIL_END jit_gil_release_end(__jit_gil_save)
+#endif
+
+// ============================================================================
+// Convenience helpers - simple data access (caller manages lifetime)
+// Use JIT_SCOPED_BUFFER for automatic cleanup instead
+// ============================================================================
+
+// Quick buffer access - returns pointer, buffer handle stored separately
+// Usage: 
+//   JIT_SCOPED_BUFFER(arr, pyobj);          // creates arr_buf with cleanup
+//   double* data = JIT_SCOPED_BUFFER_DATA(arr, double);
+typedef struct { void* buf; void* data; } JitBuffer;
+
+static inline JitBuffer jit_open_buffer_double(void* pyobj) {
+    JitBuffer b;
+    b.buf = jit_buffer_new(pyobj);
+    b.data = b.buf ? jit_buffer_data(b.buf) : 0;
+    return b;
+}
+
+static inline JitBuffer jit_open_buffer_int(void* pyobj) {
+    JitBuffer b;
+    b.buf = jit_buffer_new(pyobj);
+    b.data = b.buf ? jit_buffer_data(b.buf) : 0;
+    return b;
+}
+
+static inline JitBuffer jit_open_buffer_float(void* pyobj) {
+    JitBuffer b;
+    b.buf = jit_buffer_new(pyobj);
+    b.data = b.buf ? jit_buffer_data(b.buf) : 0;
+    return b;
+}
+
+static inline void jit_close_buffer(JitBuffer* b) {
+    if (b->buf) jit_buffer_free(b->buf);
+    b->buf = 0;
+    b->data = 0;
+}
+
+// Legacy helpers (may leak if not manually freed - prefer JIT_SCOPED_BUFFER)
+static inline double* buffer_double(void* pyobj) {
+    void* buf = jit_buffer_new(pyobj);
+    return buf ? (double*)jit_buffer_data(buf) : 0;
+}
+
+static inline long long* buffer_int(void* pyobj) {
+    void* buf = jit_buffer_new(pyobj);
+    return buf ? (long long*)jit_buffer_data(buf) : 0;
+}
+
+static inline float* buffer_float(void* pyobj) {
+    void* buf = jit_buffer_new(pyobj);
+    return buf ? (float*)jit_buffer_data(buf) : 0;
+}
+
+)" + var_decls + "\n" + code;
+
+        // Create a local context for this compilation
+        auto local_context = std::make_unique<llvm::LLVMContext>();
+
+        // Generate temp file path
+        static std::atomic<int> counter{0};
+        int id = counter++;
+        std::string temp_dir = ".";
+        if (const char* tmp = std::getenv("TEMP")) {
+            temp_dir = tmp;
+        } else if (const char* tmp2 = std::getenv("TMP")) {
+            temp_dir = tmp2;
+        }
+        std::string src_file = temp_dir + "/justjit_" + std::to_string(id) + 
+                               (lang == "c++" ? ".cpp" : ".c");
+
+        // Write source code to temp file
+        {
+            std::ofstream out(src_file);
+            if (!out) {
+                throw std::runtime_error("CError: Failed to create temp source file: " + src_file);
+            }
+            out << full_code;
+        }
+
+        // =====================================================================
+        // Simple CompilerInstance approach with environment variable detection
+        // Run from Developer Command Prompt for automatic MSVC path detection
+        // =====================================================================
+        
+        // Build command line args
+        std::vector<std::string> args_storage;
+        std::vector<const char*> args;
+        
+        args_storage.push_back("-x");
+        if (lang == "c++") {
+            args_storage.push_back("c++");
+            args_storage.push_back("-std=c++17");
+        } else {
+            args_storage.push_back("c");
+            args_storage.push_back("-std=c11");
+        }
+        args_storage.push_back("-O2");
+        
+        // Windows SDK headers require Microsoft extensions (__declspec, etc.)
+        #ifdef _WIN32
+        args_storage.push_back("-fms-extensions");
+        args_storage.push_back("-D_CRT_SECURE_NO_WARNINGS");
+        #endif
+        
+        // Add user-specified include paths
+        for (const auto& path : include_paths_) {
+            args_storage.push_back("-I" + path);
+        }
+        
+        // =====================================================================
+        // Platform-aware header search order
+        // Windows: Use Windows SDK (complete C library, no musl to avoid conflicts)
+        // Linux:   Use musl for portability, then system headers
+        // macOS:   Use macOS SDK
+        // =====================================================================
+        
+        #ifdef _WIN32
+        // On Windows: Try Windows SDK headers first (they have complete C library)
+        #ifdef JUSTJIT_WINSDK_UCRT_DIR
+        args_storage.push_back("-isystem");
+        args_storage.push_back(JUSTJIT_WINSDK_UCRT_DIR);
+        #endif
+        #ifdef JUSTJIT_WINSDK_SHARED_DIR
+        args_storage.push_back("-isystem");
+        args_storage.push_back(JUSTJIT_WINSDK_SHARED_DIR);
+        #endif
+        #ifdef JUSTJIT_WINSDK_UM_DIR
+        args_storage.push_back("-isystem");
+        args_storage.push_back(JUSTJIT_WINSDK_UM_DIR);
+        #endif
+        #ifdef JUSTJIT_MSVC_INCLUDE_DIR
+        args_storage.push_back("-isystem");
+        args_storage.push_back(JUSTJIT_MSVC_INCLUDE_DIR);
+        #endif
+        
+        // Fallback 1: INCLUDE env var from Developer Command Prompt
+        #if !defined(JUSTJIT_WINSDK_UCRT_DIR)
+        {
+            bool found_include = false;
+            if (const char* inc_env = std::getenv("INCLUDE")) {
+                std::string include_str(inc_env);
+                std::stringstream ss(include_str);
+                std::string path;
+                while (std::getline(ss, path, ';')) {
+                    if (!path.empty()) {
+                        args_storage.push_back("-isystem");
+                        args_storage.push_back(path);
+                        found_include = true;
+                    }
+                }
+            }
+            
+            // Fallback 2: Use embedded musl if no SDK/INCLUDE available
+            // This enables pure C code to work without any dev tools installed
+            #ifdef JUSTJIT_EMBEDDED_LIBC_DIR
+            if (!found_include) {
+                args_storage.push_back("-isystem");
+                args_storage.push_back(JUSTJIT_EMBEDDED_LIBC_DIR);
+            }
+            #endif
+        }
+        #endif
+        
+        #else
+        // On Linux/macOS: Use embedded musl libc headers for portability
+        #ifdef JUSTJIT_EMBEDDED_LIBC_DIR
+        args_storage.push_back("-isystem");
+        args_storage.push_back(JUSTJIT_EMBEDDED_LIBC_DIR);
+        #endif
+        
+        // Then system headers as fallback for platform-specific code
+        #ifdef JUSTJIT_LINUX_INCLUDE_DIR
+        args_storage.push_back("-isystem");
+        args_storage.push_back(JUSTJIT_LINUX_INCLUDE_DIR);
+        #endif
+        
+        #ifdef JUSTJIT_MACOS_SDK_DIR
+        args_storage.push_back("-isystem");
+        args_storage.push_back(JUSTJIT_MACOS_SDK_DIR);
+        #endif
+        #endif
+        
+        // Use embedded Clang resource headers (stddef.h, stdint.h, stdarg.h, etc.)
+        // These are provided by the Clang installation and found at CMake configure time
+        #ifdef JUSTJIT_CLANG_RESOURCE_DIR
+        args_storage.push_back("-isystem");
+        args_storage.push_back(JUSTJIT_CLANG_RESOURCE_DIR);
+        #endif
+        
+        // Use embedded libc++ for C++ standard library (cmath, cstdlib, etc.)
+        #ifdef JUSTJIT_LIBCXX_DIR
+        if (lang == "c++") {
+            args_storage.push_back("-stdlib=libc++");
+            args_storage.push_back("-isystem");
+            args_storage.push_back(JUSTJIT_LIBCXX_DIR);
+        }
+        #endif
+
+        
+        args_storage.push_back(src_file);
+        
+        // Convert to const char* array
+        for (const auto& arg : args_storage) {
+            args.push_back(arg.c_str());
+        }
+
+        // Create compiler instance
+        clang::CompilerInstance compiler;
+        
+        // Create diagnostics
+        clang::DiagnosticOptions diag_opts;
+        clang::TextDiagnosticPrinter* diag_printer = 
+            new clang::TextDiagnosticPrinter(llvm::errs(), diag_opts);
+        compiler.createDiagnostics(*llvm::vfs::getRealFileSystem(), diag_printer);
+        
+        // Create invocation and parse args
+        clang::CompilerInvocation::CreateFromArgs(
+            compiler.getInvocation(),
+            args,
+            compiler.getDiagnostics()
+        );
+
+        // Set up target
+        std::string target_triple = llvm::sys::getDefaultTargetTriple();
+        auto& target_opts = compiler.getTargetOpts();
+        target_opts.Triple = target_triple;
+        compiler.setTarget(clang::TargetInfo::CreateTargetInfo(
+            compiler.getDiagnostics(), target_opts));
+
+        // Create file manager and source manager
+        compiler.createFileManager();
+        compiler.createSourceManager(compiler.getFileManager());
+
+        // Use local_context for the action
+        clang::EmitLLVMOnlyAction action(local_context.get());
+
+        bool success = compiler.ExecuteAction(action);
+        
+        // Cleanup temp file
+        std::remove(src_file.c_str());
+
+        if (!success) {
+            throw std::runtime_error("CError: Failed to compile inline C code");
+        }
+
+        // Get the generated module
+        std::unique_ptr<llvm::Module> module = action.takeModule();
+        if (!module) {
+            throw std::runtime_error("CError: No module generated");
+        }
+        
+        // Capture IR for dump_ir functionality
+        std::string ir_str;
+        llvm::raw_string_ostream ir_stream(ir_str);
+        module->print(ir_stream, nullptr);
+        last_ir_ = ir_stream.str();
+
+        // Extract function names before adding to JIT (using Python C API)
+        PyObject* result_dict = PyDict_New();
+        if (!result_dict) {
+            throw std::runtime_error("CError: Failed to create result dict");
+        }
+        
+        // Create list of function names
+        PyObject* func_list = PyList_New(0);
+        if (!func_list) {
+            Py_DECREF(result_dict);
+            throw std::runtime_error("CError: Failed to create function list");
+        }
+        
+        // Store function info for later callable creation
+        // ParamType enum for per-parameter type tracking
+        enum class ParamType { INT64, INT32, DOUBLE, FLOAT, PTR };
+        
+        struct FuncInfo {
+            std::string name;           // Original function name (for export key)
+            std::string symbol_name;    // Name to lookup (may be wrapper)
+            int param_count;
+            bool is_double_ret;
+            bool is_void_ret;
+            bool is_int32_ret;      // true for i32, i16, i8, i1 return types
+            bool is_ptr_ret;        // true for pointer return types
+            bool is_struct_ret;     // true for struct return (unsupported)
+            bool is_varargs;        // true for varargs functions
+            std::vector<ParamType> param_types;  // Per-parameter type tracking
+        };
+
+        std::vector<FuncInfo> functions_to_export;
+        
+        for (auto& func : module->functions()) {
+            if (!func.isDeclaration() && !func.getName().empty()) {
+                std::string func_name = func.getName().str();
+                // Skip internal/system functions
+                if (func_name[0] != '_' && func_name.find("jit_") != 0 && 
+                    func_name.find("buffer_") != 0 && func_name.find("gil_") != 0) {
+                    
+                    PyObject* py_name = PyUnicode_FromString(func_name.c_str());
+                    if (py_name) {
+                        PyList_Append(func_list, py_name);
+                        Py_DECREF(py_name);
+                    }
+                    
+                    // Detect signature from LLVM types
+                    FuncInfo info;
+                    info.name = func_name;
+                    info.symbol_name = func_name;  // Default: same as name, may be changed if wrapper created
+                    info.param_count = func.arg_size();
+
+                    info.is_varargs = func.isVarArg();
+                    
+                    llvm::Type* ret_type = func.getReturnType();
+                    info.is_void_ret = ret_type->isVoidTy();
+                    info.is_double_ret = ret_type->isDoubleTy() || ret_type->isFloatTy();
+                    info.is_ptr_ret = ret_type->isPointerTy();
+                    info.is_struct_ret = ret_type->isStructTy();
+                    
+                    // Detect small integer return types (i32, i16, i8, i1)
+                    info.is_int32_ret = false;
+                    if (ret_type->isIntegerTy()) {
+                        unsigned bit_width = ret_type->getIntegerBitWidth();
+                        if (bit_width <= 32) {
+                            info.is_int32_ret = true;
+                        }
+                    }
+                    
+                    // Track each parameter's type
+                    for (auto& arg : func.args()) {
+                        llvm::Type* arg_type = arg.getType();
+                        if (arg_type->isDoubleTy()) {
+                            info.param_types.push_back(ParamType::DOUBLE);
+                        } else if (arg_type->isFloatTy()) {
+                            info.param_types.push_back(ParamType::FLOAT);
+                        } else if (arg_type->isPointerTy()) {
+                            info.param_types.push_back(ParamType::PTR);
+                        } else if (arg_type->isIntegerTy()) {
+                            unsigned bit_width = arg_type->getIntegerBitWidth();
+                            if (bit_width <= 32) {
+                                info.param_types.push_back(ParamType::INT32);
+                            } else {
+                                info.param_types.push_back(ParamType::INT64);
+                            }
+                        } else {
+                            info.param_types.push_back(ParamType::INT64);  // Default
+                        }
+                    }
+
+                    
+                    functions_to_export.push_back(info);
+                }
+            }
+        }
+        PyDict_SetItemString(result_dict, "functions", func_list);
+        Py_DECREF(func_list);
+        
+        // Generate LLVM IR wrappers for mixed-type functions
+        // This enables proper calling convention for mixed int/float params
+        llvm::LLVMContext& ctx = module->getContext();
+        llvm::IRBuilder<> builder(ctx);
+        for (auto& info : functions_to_export) {
+            // Check if this function has mixed types or float params
+            bool has_int = false, has_float_or_double = false, has_float32 = false;
+            for (const auto& pt : info.param_types) {
+                if (pt == ParamType::DOUBLE || pt == ParamType::FLOAT) {
+                    has_float_or_double = true;
+                    if (pt == ParamType::FLOAT) {
+                        has_float32 = true;  // 32-bit float needs wrapper
+                    }
+                } else {
+                    has_int = true;
+                }
+            }
+
+            
+            // Generate wrapper if: mixed types OR has float32 params (need double→float conversion)
+            bool needs_wrapper = (has_int && has_float_or_double) || has_float32;
+            if (needs_wrapper && info.param_count > 0 && info.param_count <= 4) {
+
+                llvm::Function* orig_func = module->getFunction(info.name);
+                if (!orig_func) continue;
+                
+                // Create wrapper function type: all params as int64, return double for float
+                std::vector<llvm::Type*> wrapper_param_types(info.param_count, 
+                    llvm::Type::getInt64Ty(ctx));
+                // Use double return type if original returns float (for consistent calling)
+                llvm::Type* wrapper_ret_type = orig_func->getReturnType();
+                if (wrapper_ret_type->isFloatTy()) {
+                    wrapper_ret_type = llvm::Type::getDoubleTy(ctx);
+                }
+                llvm::FunctionType* wrapper_type = llvm::FunctionType::get(
+                    wrapper_ret_type, wrapper_param_types, false);
+
+                
+                std::string wrapper_name = "__jit_wrap_" + info.name;
+                llvm::Function* wrapper_func = llvm::Function::Create(
+                    wrapper_type, llvm::Function::ExternalLinkage, wrapper_name, module.get());
+                
+                // Create entry block
+                llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx, "entry", wrapper_func);
+                builder.SetInsertPoint(entry);
+                
+                // Convert args: reinterpret int64 bits to double/float where needed
+                // LLVM doesn't allow bitcast between int and float, so use alloca+store+load
+                std::vector<llvm::Value*> converted_args;
+                auto arg_it = wrapper_func->arg_begin();
+                for (size_t i = 0; i < info.param_types.size(); i++, arg_it++) {
+                    llvm::Value* arg_val = &*arg_it;
+                    
+                    if (info.param_types[i] == ParamType::DOUBLE) {
+                        // Reinterpret int64 bits as double via memory (opaque pointer compatible)
+                        llvm::AllocaInst* alloca = builder.CreateAlloca(
+                            llvm::Type::getInt64Ty(ctx), nullptr, "int_slot");
+                        builder.CreateStore(arg_val, alloca);
+                        // With opaque pointers, just load with target type directly
+                        llvm::Value* converted = builder.CreateLoad(
+                            llvm::Type::getDoubleTy(ctx), alloca, "as_double");
+                        converted_args.push_back(converted);
+                    } else if (info.param_types[i] == ParamType::FLOAT) {
+                        // Python passes doubles, need to convert double→float
+                        // First reinterpret int64 bits as double, then fptrunc to float
+                        llvm::AllocaInst* alloca = builder.CreateAlloca(
+                            llvm::Type::getInt64Ty(ctx), nullptr, "int_slot");
+                        builder.CreateStore(arg_val, alloca);
+                        llvm::Value* as_double = builder.CreateLoad(
+                            llvm::Type::getDoubleTy(ctx), alloca, "as_double");
+                        // Convert double to float
+                        llvm::Value* converted = builder.CreateFPTrunc(as_double,
+                            llvm::Type::getFloatTy(ctx), "as_float");
+                        converted_args.push_back(converted);
+
+                    } else {
+                        // Integer or pointer type
+                        llvm::Type* expected = orig_func->getArg(i)->getType();
+                        
+                        if (expected->isPointerTy()) {
+                            // Convert int64 to pointer via inttoptr
+                            arg_val = builder.CreateIntToPtr(arg_val, expected);
+                        } else if (expected != arg_val->getType() && expected->isIntegerTy()) {
+                            // Integer truncation/extension
+                            unsigned expected_bits = expected->getIntegerBitWidth();
+                            arg_val = builder.CreateTrunc(arg_val, expected);
+                        }
+                        converted_args.push_back(arg_val);
+                    }
+
+                }
+                
+                // Call original function
+                llvm::Value* call_result = builder.CreateCall(orig_func, converted_args);
+                
+                // Return result (extend float to double for consistent calling)
+                if (orig_func->getReturnType()->isVoidTy()) {
+                    builder.CreateRetVoid();
+                } else if (orig_func->getReturnType()->isFloatTy()) {
+                    // Extend float return to double
+                    llvm::Value* extended = builder.CreateFPExt(call_result, 
+                        llvm::Type::getDoubleTy(ctx), "ret_as_double");
+                    builder.CreateRet(extended);
+                } else {
+                    builder.CreateRet(call_result);
+                }
+                
+                // Update info to use wrapper for symbol lookup (keep original name for export key)
+                info.symbol_name = wrapper_name;
+                // Mark all params as INT64 since wrapper takes all int64
+                for (auto& pt : info.param_types) {
+                    pt = ParamType::INT64;
+                }
+            }
+        }
+
+
+        // Add to JIT (same pattern as other compile functions)
+        auto err = jit_core_->jit->addIRModule(
+            llvm::orc::ThreadSafeModule(std::move(module), std::move(local_context))
+        );
+
+        if (err) {
+            Py_DECREF(result_dict);
+            std::string err_str;
+            llvm::raw_string_ostream os(err_str);
+            os << err;
+            throw std::runtime_error("CError: Failed to add IR to JIT: " + err_str);
+        }
+
+        // Create callables for each exported function and add to result dict
+        for (const auto& info : functions_to_export) {
+            // Lookup using symbol_name (may be wrapper for mixed-type functions)
+            uint64_t func_ptr = jit_core_->lookup_symbol(info.symbol_name);
+            if (func_ptr == 0) continue;
+            
+
+            // Determine return type for JITCallable
+            JITCallableReturnType ret_type;
+            
+            if (info.is_void_ret) {
+                ret_type = JITCallableReturnType::VOID;
+            } else if (info.is_struct_ret) {
+                // Struct returns will error at call time with helpful message
+                ret_type = JITCallableReturnType::INT64;  // Placeholder
+            } else if (info.is_ptr_ret) {
+                ret_type = JITCallableReturnType::PTR;
+            } else if (info.is_double_ret) {
+                ret_type = JITCallableReturnType::DOUBLE;
+            } else if (info.is_int32_ret) {
+                ret_type = JITCallableReturnType::INT32;
+            } else {
+                ret_type = JITCallableReturnType::INT64;
+            }
+            
+            // Build param_type_mask from per-param types (4 bits each, up to 8 params)
+            uint32_t param_type_mask = 0;
+            for (size_t i = 0; i < info.param_types.size() && i < 8; i++) {
+                int type_code;
+                switch (info.param_types[i]) {
+                    case ParamType::INT64: type_code = PARAM_INT64; break;
+                    case ParamType::INT32: type_code = PARAM_INT32; break;
+                    case ParamType::DOUBLE: type_code = PARAM_DOUBLE; break;
+                    case ParamType::FLOAT: type_code = PARAM_FLOAT; break;
+                    case ParamType::PTR: type_code = PARAM_PTR; break;
+                    default: type_code = PARAM_INT64; break;
+                }
+                param_type_mask |= (type_code << (i * 4));
+            }
+            
+            // Create callable with per-param types
+            PyObject* callable = JITCallable_New(func_ptr, ret_type, info.param_count, 
+                                                  param_type_mask, info.name.c_str(),
+                                                  info.is_varargs, info.is_struct_ret);
+            if (callable) {
+                PyDict_SetItemString(result_dict, info.name.c_str(), callable);
+                Py_DECREF(callable);
+            }
+        }
+
+
+        // Return the result dict (steal reference)
+        return nb::steal<nb::dict>(result_dict);
+    }
+
+    nb::object InlineCCompiler::get_c_callable(const std::string& name, const std::string& signature)
+    {
+        // Look up the symbol in the JIT
+        uint64_t func_ptr = jit_core_->lookup_symbol(name);
+        if (func_ptr == 0) {
+            throw std::runtime_error("CError: Symbol not found: " + name);
+        }
+
+        // Parse signature like "int(int,int)" or "double(double)" or "void*(void*,long long)"
+        // Find the return type (before '(')
+        size_t paren_pos = signature.find('(');
+        if (paren_pos == std::string::npos) {
+            throw std::runtime_error("CError: Invalid signature format: " + signature);
+        }
+
+        std::string return_type = signature.substr(0, paren_pos);
+        std::string params = signature.substr(paren_pos + 1);
+        
+        // Remove trailing ')'
+        if (!params.empty() && params.back() == ')') {
+            params.pop_back();
+        }
+
+        // Count parameters and build param_type_mask
+        int param_count = 0;
+        uint32_t param_type_mask = 0;
+        
+        if (!params.empty()) {
+            // Split by comma and process each param
+            std::stringstream ss(params);
+            std::string param;
+            int idx = 0;
+            while (std::getline(ss, param, ',') && idx < 8) {
+                param_count++;
+                // Trim whitespace
+                size_t start = param.find_first_not_of(" \t");
+                size_t end = param.find_last_not_of(" \t");
+                if (start != std::string::npos) {
+                    param = param.substr(start, end - start + 1);
+                }
+                
+                // Determine type code
+                int type_code = PARAM_INT64;  // default
+                if (param.find("double") != std::string::npos) {
+                    type_code = PARAM_DOUBLE;
+                } else if (param.find("float") != std::string::npos) {
+                    type_code = PARAM_FLOAT;
+                } else if (param.find('*') != std::string::npos) {
+                    type_code = PARAM_PTR;
+                }
+                
+                param_type_mask |= (type_code << (idx * 4));
+                idx++;
+            }
+        }
+
+        // Determine return type enum
+        JITCallableReturnType ret_type;
+        if (return_type == "int" || return_type == "long" || return_type == "long long") {
+            ret_type = JITCallableReturnType::INT64;
+        } else if (return_type == "double" || return_type == "float") {
+            ret_type = JITCallableReturnType::DOUBLE;
+        } else if (return_type == "void") {
+            ret_type = JITCallableReturnType::VOID;
+        } else if (!return_type.empty() && return_type.back() == '*') {
+            ret_type = JITCallableReturnType::PTR;
+        } else {
+            throw std::runtime_error("CError: Unsupported return type: " + return_type);
+        }
+
+        // Create native Python callable using JITCallable_New
+        PyObject* callable = JITCallable_New(func_ptr, ret_type, param_count, 
+                                              param_type_mask, name.c_str(), 
+                                              false, false);
+        if (!callable) {
+            throw std::runtime_error("CError: Failed to create JITCallable");
+        }
+        
+        return nb::steal<nb::object>(callable);
+    }
+
+
+#endif // JUSTJIT_HAS_CLANG
+
 } // namespace justjit
+
+

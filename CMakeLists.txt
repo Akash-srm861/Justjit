@@ -61,14 +61,191 @@ if(WIN32)
     )
 endif()
 
+# Find Clang for InlineCCompiler support
+# Clang is typically installed alongside LLVM
+find_package(Clang CONFIG HINTS ${LLVM_DIR}/../clang QUIET)
+if(Clang_FOUND)
+    message(STATUS "Found Clang - enabling InlineCCompiler")
+    add_definitions(-DJUSTJIT_HAS_CLANG=1)
+    include_directories(${CLANG_INCLUDE_DIRS})
+    set(CLANG_LIBS
+        clangFrontend
+        clangCodeGen
+        clangSema
+        clangAST
+        clangParse
+        clangLex
+        clangAnalysis
+        clangEdit
+        clangSerialization
+        clangBasic
+        clangSupport
+    )
+else()
+    message(STATUS "Clang not found - InlineCCompiler will be disabled")
+    set(CLANG_LIBS "")
+endif()
+
+# ============================================================================
+# Find Clang resource headers and libc++ for embedded stdlib support
+# This allows inline C/C++ to compile without system headers (e.g., MSVC)
+# ============================================================================
+if(Clang_FOUND)
+    # Get LLVM major version for path construction
+    string(REGEX MATCH "^[0-9]+" LLVM_MAJOR_VERSION "${LLVM_PACKAGE_VERSION}")
+    
+    # Search paths for Clang resource headers (stddef.h, stdarg.h, stdint.h, etc.)
+    # Derive source tree path from LLVM_DIR (which is ${source}/build/lib/cmake/llvm)
+    get_filename_component(LLVM_SOURCE_ROOT "${LLVM_DIR}/../../../.." ABSOLUTE)
+    set(CLANG_RESOURCE_SEARCH_PATHS
+        "${LLVM_LIBRARY_DIR}/clang/${LLVM_MAJOR_VERSION}/include"
+        "${CMAKE_PREFIX_PATH}/lib/clang/${LLVM_MAJOR_VERSION}/include"
+        "${CMAKE_PREFIX_PATH}/Library/lib/clang/${LLVM_MAJOR_VERSION}/include"
+        "/usr/lib64/clang/${LLVM_MAJOR_VERSION}/include"
+        "/usr/lib/clang/${LLVM_MAJOR_VERSION}/include"
+        "${LLVM_SOURCE_ROOT}/clang/lib/Headers"                        # LLVM source tree build
+    )
+    
+    set(CLANG_RESOURCE_INCLUDE "")
+    foreach(path ${CLANG_RESOURCE_SEARCH_PATHS})
+        if(EXISTS "${path}/stddef.h")
+            set(CLANG_RESOURCE_INCLUDE "${path}")
+            message(STATUS "Found Clang resource headers: ${path}")
+            break()
+        endif()
+    endforeach()
+    
+    # Search paths for libc++ headers
+    set(LIBCXX_SEARCH_PATHS
+        "${CMAKE_PREFIX_PATH}/include/c++/v1"
+        "${CMAKE_PREFIX_PATH}/Library/include/c++/v1"
+        "/usr/include/c++/v1"
+        "${LLVM_SOURCE_ROOT}/libcxx/include"                           # LLVM source tree build
+    )
+
+    
+    set(LIBCXX_INCLUDE "")
+    foreach(path ${LIBCXX_SEARCH_PATHS})
+        # libc++ needs both __config and __config_site (generated during build)
+        if(EXISTS "${path}/__config")
+            # Check if __config_site exists (required for libc++ to work)
+            # In source builds, this file is generated during libc++ configuration
+            if(EXISTS "${path}/__config_site")
+                set(LIBCXX_INCLUDE "${path}")
+                message(STATUS "Found libc++ headers: ${path}")
+                break()
+            else()
+                message(STATUS "libc++ at ${path} missing __config_site (not configured)")
+            endif()
+        endif()
+    endforeach()
+
+    
+    if(NOT CLANG_RESOURCE_INCLUDE)
+        message(WARNING "Clang resource headers not found - inline C may require system headers")
+    endif()
+    if(NOT LIBCXX_INCLUDE)
+        message(WARNING "libc++ headers not found - inline C++ stdlib may not work")
+    endif()
+endif()
+
+
 # Find zlib (required by LLVM)
 find_package(ZLIB REQUIRED)
+
 
 # Create the Python extension module
 nanobind_add_module(_core NB_STATIC NOMINSIZE
     src/jit_core.cpp
     src/bindings.cpp
+    src/raii_wrapper.cpp
 )
+
+# Pass embedded header paths to source code via compile definitions
+if(CLANG_RESOURCE_INCLUDE)
+    target_compile_definitions(_core PRIVATE
+        JUSTJIT_CLANG_RESOURCE_DIR="${CLANG_RESOURCE_INCLUDE}")
+endif()
+if(LIBCXX_INCLUDE)
+    target_compile_definitions(_core PRIVATE
+        JUSTJIT_LIBCXX_DIR="${LIBCXX_INCLUDE}")
+endif()
+
+# Embedded musl libc headers for self-contained inline C (no system dependencies)
+set(EMBEDDED_LIBC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/libc-headers")
+if(EXISTS "${EMBEDDED_LIBC_DIR}/stdio.h")
+    target_compile_definitions(_core PRIVATE
+        JUSTJIT_EMBEDDED_LIBC_DIR="${EMBEDDED_LIBC_DIR}")
+    message(STATUS "Using embedded musl libc headers: ${EMBEDDED_LIBC_DIR}")
+else()
+    message(WARNING "Embedded libc headers not found - inline C may require system headers")
+endif()
+
+# ============================================================================
+# Optional Platform SDK Headers (for platform-specific code like winsock2.h)
+# These are detected at build time and used as fallback after embedded musl
+# ============================================================================
+
+# Windows SDK (for winsock2.h, windows.h, etc.)
+if(WIN32)
+    set(WINSDK_INCLUDE "")
+    set(MSVC_INCLUDE "")
+    
+    # Find Windows SDK
+    file(GLOB WINSDK_VERSIONS "C:/Program Files (x86)/Windows Kits/10/Include/*")
+    if(WINSDK_VERSIONS)
+        list(SORT WINSDK_VERSIONS)
+        list(REVERSE WINSDK_VERSIONS)
+        list(GET WINSDK_VERSIONS 0 WINSDK_LATEST)
+        if(EXISTS "${WINSDK_LATEST}/ucrt")
+            set(WINSDK_INCLUDE "${WINSDK_LATEST}")
+            target_compile_definitions(_core PRIVATE
+                JUSTJIT_WINSDK_UCRT_DIR="${WINSDK_INCLUDE}/ucrt"
+                JUSTJIT_WINSDK_SHARED_DIR="${WINSDK_INCLUDE}/shared"
+                JUSTJIT_WINSDK_UM_DIR="${WINSDK_INCLUDE}/um")
+            message(STATUS "Found Windows SDK headers: ${WINSDK_INCLUDE}")
+        endif()
+    endif()
+    
+    # Find MSVC headers
+    file(GLOB MSVC_VERSIONS "C:/Program Files/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*")
+    if(MSVC_VERSIONS)
+        list(SORT MSVC_VERSIONS)
+        list(REVERSE MSVC_VERSIONS)
+        list(GET MSVC_VERSIONS 0 MSVC_LATEST)
+        if(EXISTS "${MSVC_LATEST}/include")
+            set(MSVC_INCLUDE "${MSVC_LATEST}/include")
+            target_compile_definitions(_core PRIVATE
+                JUSTJIT_MSVC_INCLUDE_DIR="${MSVC_INCLUDE}")
+            message(STATUS "Found MSVC headers: ${MSVC_INCLUDE}")
+        endif()
+    endif()
+endif()
+
+# Linux system headers (for platform-specific code)
+if(UNIX AND NOT APPLE)
+    if(EXISTS "/usr/include")
+        target_compile_definitions(_core PRIVATE
+            JUSTJIT_LINUX_INCLUDE_DIR="/usr/include")
+        message(STATUS "Found Linux system headers: /usr/include")
+    endif()
+endif()
+
+# macOS SDK headers (for platform-specific code)
+if(APPLE)
+    execute_process(
+        COMMAND xcrun --show-sdk-path
+        OUTPUT_VARIABLE MACOS_SDK_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE XCRUN_RESULT
+    )
+    if(XCRUN_RESULT EQUAL 0 AND EXISTS "${MACOS_SDK_PATH}/usr/include")
+        target_compile_definitions(_core PRIVATE
+            JUSTJIT_MACOS_SDK_DIR="${MACOS_SDK_PATH}/usr/include")
+        message(STATUS "Found macOS SDK headers: ${MACOS_SDK_PATH}/usr/include")
+    endif()
+endif()
+
 
 # Link against LLVM libraries
 # Windows: LLVM-C.dll only exposes C API, so we must link static component libs for C++ API
@@ -131,6 +308,10 @@ message(STATUS "LLVM libraries to link: ${LLVM_LIBS}")
 if(WIN32)
     # Windows: Must use static component libraries for C++ API
     target_link_libraries(_core PRIVATE ${LLVM_LIBS})
+    # Link Clang libraries if available
+    if(Clang_FOUND)
+        target_link_libraries(_core PRIVATE ${CLANG_LIBS})
+    endif()
 else()
     # Linux/macOS: Try to use the unified shared library first
     find_library(LLVM_SHARED_LIB NAMES LLVM LLVM-${LLVM_VERSION_MAJOR} PATHS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
@@ -140,6 +321,10 @@ else()
     else()
         # Fallback: use component libraries
         target_link_libraries(_core PRIVATE ${LLVM_LIBS})
+    endif()
+    # Link Clang libraries if available
+    if(Clang_FOUND)
+        target_link_libraries(_core PRIVATE ${CLANG_LIBS})
     endif()
 endif()
 

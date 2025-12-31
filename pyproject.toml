@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "justjit"
-version = "0.1.4"
+version = "0.1.5"
 description = "Fast Python JIT compiler using LLVM ORC - lowers Python bytecode to native machine code"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -38,8 +38,44 @@ build-dir = "build/{wheel_tag}"
 [tool.cibuildwheel]
 build-verbosity = 1
 build = ["cp313-*"]
-skip = ["*-musllinux_*", "*-win32", "*-manylinux_i686", "pp*"]
+skip = ["*-win32", "*-manylinux_i686", "*-musllinux_i686", "pp*"]
 archs = ["auto64"]
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+musllinux-x86_64-image = "musllinux_1_2"
+before-build = "pip install nanobind scikit-build-core cmake ninja"
+
+# Manylinux-specific: use DNF for LLVM
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_*"
+before-all = """
+set -ex
+dnf install -y epel-release || true
+dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || true
+dnf install -y llvm-devel llvm-static clang-devel zlib-devel libxml2-devel libffi-devel cmake ninja-build ncurses-devel || true
+llvm-config --version || echo "llvm-config not found"
+"""
+repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 -w {dest_dir} {wheel} || cp {wheel} {dest_dir}/"
+environment = { LLVM_DIR = "/usr/lib64/cmake/llvm", CMAKE_PREFIX_PATH = "/usr", LD_LIBRARY_PATH = "/usr/lib64:/usr/lib" }
+
+# Musllinux-specific: use APK for LLVM
+[[tool.cibuildwheel.overrides]]
+select = "*-musllinux_*"
+before-all = """
+set -ex
+apk add --no-cache llvm-dev clang-dev clang-static llvm-static zlib-dev libxml2-dev libffi-dev cmake ninja ncurses-dev musl-dev g++ linux-headers
+llvm-config --version || echo "llvm-config not found"
+"""
+repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel} || cp {wheel} {dest_dir}/"
+environment = { LLVM_DIR = "/usr/lib/cmake/llvm", Clang_DIR = "/usr/lib/cmake/clang", CMAKE_PREFIX_PATH = "/usr" }
+
+[tool.cibuildwheel.macos]
+before-build = "pip install nanobind scikit-build-core cmake ninja delocate"
+repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v {wheel} || cp {wheel} {dest_dir}/"
 
 [tool.cibuildwheel.macos.environment]
 MACOSX_DEPLOYMENT_TARGET = "11.0"
+
+[tool.cibuildwheel.windows]
+before-build = "pip install nanobind scikit-build-core cmake ninja delvewheel"

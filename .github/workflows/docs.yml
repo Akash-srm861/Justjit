@@ -1,0 +1,43 @@
+name: Build Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'src/justjit/**'
+      - '.readthedocs.yaml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'src/justjit/**'
+  workflow_dispatch:
+
+jobs:
+  build_docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    
+    - name: Install documentation dependencies
+      run: |
+        pip install -r docs/requirements.txt
+    
+    - name: Build HTML documentation
+      run: |
+        cd docs
+        sphinx-build -b html -W --keep-going . _build/html
+    
+    - name: Upload documentation artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation
+        path: docs/_build/html/

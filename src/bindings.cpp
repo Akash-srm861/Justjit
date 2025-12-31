@@ -62,6 +62,23 @@ NB_MODULE(_core, m)
          .def("get_optional_f64_callable", &justjit::JITCore::get_optional_f64_callable, "name"_a, "param_count"_a, "Get a callable for an optional_f64-mode function")
          .def("get_generator_callable", &justjit::JITCore::get_generator_callable, "name"_a, "param_count"_a, "total_locals"_a, "func_name"_a, "func_qualname"_a, "Get generator metadata for creating generator objects");
 
+#ifdef JUSTJIT_HAS_CLANG
+     // InlineCCompiler - Compile C/C++ code at runtime using embedded Clang
+     nb::class_<justjit::InlineCCompiler>(m, "InlineCCompiler")
+         .def(nb::init<justjit::JITCore*>(), "jit_core"_a,
+              "Create an inline C compiler associated with a JIT instance")
+         .def("add_include_path", &justjit::InlineCCompiler::add_include_path, "path"_a,
+              "Add an include path for #include directives")
+         .def("compile", &justjit::InlineCCompiler::compile_and_execute,
+              "code"_a, "lang"_a, "captured_vars"_a,
+              "Compile C/C++ code and return dict of callable functions")
+         .def("get_callable", &justjit::InlineCCompiler::get_c_callable,
+              "name"_a, "signature"_a,
+              "Get a callable for a previously compiled C function")
+         .def("get_last_ir", &justjit::InlineCCompiler::get_last_ir,
+              "Get the LLVM IR from the last compilation");
+#endif // JUSTJIT_HAS_CLANG
+
      // Expose the JITGenerator type and creation function
      m.def("create_jit_generator", [](uint64_t step_func_addr, int64_t num_locals, nb::object name, nb::object qualname) {
          auto step_func = reinterpret_cast<justjit::GeneratorStepFunc>(step_func_addr);

@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 #include <unordered_set>
+#include <atomic>
 
 namespace nb = nanobind;
 
@@ -139,6 +140,59 @@ namespace justjit
         llvm::BasicBlock* from_block;          // Which LLVM block this state came from
         int from_offset;                       // Bytecode offset this state is from
     };
+
+#ifdef JUSTJIT_HAS_CLANG
+    // =========================================================================
+    // Inline C Compiler - Compiles C/C++ code to LLVM IR at runtime
+    // =========================================================================
+    // Uses embedded clang to compile C/C++ strings to LLVM modules.
+    // Provides seamless Python-C interop with:
+    //   - Auto variable capture from Python scope
+    //   - Auto export of new C variables back to Python
+    //   - py() macro for calling Python from C
+    //   - gil.release()/acquire() for GIL management
+    // =========================================================================
+
+    class JITCore;  // Forward declaration
+
+    class InlineCCompiler
+    {
+    public:
+        InlineCCompiler(JITCore* jit_core);
+        ~InlineCCompiler();
+
+        // Add include path for #include directives
+        void add_include_path(const std::string& path);
+
+        // Compile C/C++ code string to LLVM Module
+        // lang: "c" or "c++"
+        // captured_vars: Python dict of variables to inject into C code
+        // Returns: dict of new/modified variables to export back to Python
+        nb::dict compile_and_execute(
+            const std::string& code,
+            const std::string& lang,
+            nb::dict captured_vars
+        );
+
+        // Get a Python callable wrapper for a C function
+        // signature: "int(int,int)" or "double(double)" etc.
+        nb::object get_c_callable(const std::string& name, const std::string& signature);
+        
+        // Get the LLVM IR from the last compilation
+        std::string get_last_ir() const { return last_ir_; }
+
+    private:
+        JITCore* jit_core_;
+        std::vector<std::string> include_paths_;
+        std::string last_ir_;  // Store last compiled IR
+
+        // Generate C code that declares captured Python variables
+        std::string generate_variable_declarations(nb::dict captured_vars);
+
+        // Extract new variables from compiled module
+        nb::dict extract_exported_variables(llvm::Module* module);
+    };
+#endif // JUSTJIT_HAS_CLANG
 
     class JITCore
     {
@@ -308,6 +362,7 @@ namespace justjit
         llvm::Function *jit_async_gen_unwrap_func = nullptr; // PyObject* JITAsyncGenUnwrap(PyObject*) for unwrapping
 
     private:
+        friend class InlineCCompiler;  // Allow access to jit for object loading
         std::unique_ptr<llvm::orc::LLJIT> jit;
         std::unique_ptr<llvm::LLVMContext> context;
         int opt_level = 3;

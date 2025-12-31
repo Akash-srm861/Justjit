@@ -22,6 +22,7 @@ Features
 
 - Compiles Python bytecode to LLVM IR, then to native machine code
 - **12 native compilation modes** for maximum performance (int, float, bool, complex, SIMD, etc.)
+- **Inline C/C++ compilation** - embed and call C code directly from Python
 - Generator and async function support via state machine compilation
 - No interpreter overhead for numeric loops
 - Near-complete Python 3.13 opcode coverage (75+ opcodes)
@@ -68,9 +69,12 @@ Use the ``@jit`` decorator:
    :maxdepth: 2
    :caption: Advanced
 
+   inline_c
+   raii
    internals
    async
    cfg
+
 
 Indices and tables
 ==================

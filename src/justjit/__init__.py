@@ -11,7 +11,6 @@ if sys.platform == "win32":
 
     # Check common LLVM installation paths
     _llvm_paths = [
-        r"C:\Users\vetri\llvm-project\build\Release\bin",  # Local LLVM build
         os.path.join(os.environ.get("LLVM_DIR", ""), "..", "..", "..", "bin"),
         r"C:\Program Files\LLVM\bin",
         os.path.expanduser(r"~\llvm-project\build\Release\bin"),
@@ -40,8 +39,16 @@ if sys.platform == "win32":
 # Now import the C++ extension module
 from ._core import JIT, create_jit_generator, create_jit_coroutine
 
-__version__ = "0.1.2"
-__all__ = ["JIT", "jit", "dump_ir", "create_jit_generator", "create_jit_coroutine"]
+# InlineCCompiler is only available if Clang support was compiled in
+try:
+    from ._core import InlineCCompiler
+    _HAS_CLANG = True
+except ImportError:
+    _HAS_CLANG = False
+    InlineCCompiler = None
+
+__version__ = "0.1.5"
+__all__ = ["JIT", "jit", "dump_ir", "create_jit_generator", "create_jit_coroutine", "InlineCCompiler", "inline_c", "dump_c_ir"]
 
 # Python code flags
 _CO_GENERATOR = 0x20
@@ -1143,3 +1150,123 @@ def dump_ir(func):
     jit_instance.set_dump_ir(False)
     
     return ir
+
+
+# ============================================================================
+# Inline C Compiler - Compile C/C++ code at runtime
+# ============================================================================
+
+# Global InlineCCompiler instance (lazy initialized)
+_global_c_compiler = None
+_global_jit_for_c = None
+_last_c_ir = None  # Store last compiled C IR
+
+
+def dump_c_ir():
+    """
+    Get the LLVM IR from the last inline_c compilation.
+    
+    Returns:
+        str: LLVM IR string, or None if no compilation has been done
+        
+    Example:
+        result = inline_c('int add(int a, int b) { return a + b; }')
+        print(dump_c_ir())  # Prints the LLVM IR
+    """
+    if _global_c_compiler:
+        return _global_c_compiler.get_last_ir()
+    return None
+
+
+def inline_c(code, lang="c", captured_vars=None, include_paths=None, dump_ir=False):
+    """
+    Compile C/C++ code at runtime and return callable functions.
+    
+    This uses Clang's Driver API to automatically detect the system's
+    C/C++ toolchain (MSVC, MinGW, etc.) without hardcoded paths.
+    
+    Args:
+        code: C or C++ source code to compile
+        lang: "c" or "c++" (default: "c")
+        captured_vars: dict of Python variables to inject into C code
+        include_paths: list of additional include directories
+        
+    Returns:
+        dict containing:
+        - 'functions': list of compiled function names
+        - Each function name maps to a callable
+        
+    Example:
+        result = inline_c('''
+            int add(int a, int b) {
+                return a + b;
+            }
+        ''')
+        
+        add_func = result['add']
+        print(add_func(3, 5))  # Output: 8
+        
+    For functions requiring includes:
+        result = inline_c('''
+            #include <stdio.h>
+            void hello() { printf("Hello!\\n"); }
+        ''')
+        # Note: Requires MSVC or MinGW installed on Windows
+        
+    Raises:
+        RuntimeError: If Clang support was not compiled in
+        RuntimeError: If C compilation fails
+    """
+    global _global_c_compiler, _global_jit_for_c
+    
+    if not _HAS_CLANG:
+        raise RuntimeError(
+            "inline_c requires Clang support. "
+            "Rebuild justjit with JUSTJIT_HAS_CLANG=1 and Clang libraries."
+        )
+    
+    # Lazy init global compiler
+    if _global_c_compiler is None:
+        _global_jit_for_c = JIT()
+        _global_c_compiler = InlineCCompiler(_global_jit_for_c)
+        
+        # Auto-add common include paths
+        # 1. Current working directory
+        _global_c_compiler.add_include_path(os.getcwd())
+        
+        # 2. Try to get caller's script directory
+        import inspect
+        try:
+            frame = inspect.currentframe()
+            if frame and frame.f_back and frame.f_back.f_back:
+                caller_file = frame.f_back.f_back.f_globals.get('__file__')
+                if caller_file:
+                    caller_dir = os.path.dirname(os.path.abspath(caller_file))
+                    if caller_dir and caller_dir != os.getcwd():
+                        _global_c_compiler.add_include_path(caller_dir)
+        except Exception:
+            pass  # Ignore errors in path detection
+    
+    # Add user-provided include paths
+    if include_paths:
+        for path in include_paths:
+            _global_c_compiler.add_include_path(path)
+    
+    # Compile and execute
+    if captured_vars is None:
+        captured_vars = {}
+    
+    # Enable IR capture if requested
+    global _last_c_ir
+    if dump_ir and _global_jit_for_c:
+        _global_jit_for_c.set_dump_ir(True)
+    
+    result = _global_c_compiler.compile(code, lang, captured_vars)
+    
+    # Capture IR if requested
+    if dump_ir and _global_jit_for_c:
+        _last_c_ir = _global_jit_for_c.get_last_ir()
+        _global_jit_for_c.set_dump_ir(False)
+    
+    return result
+

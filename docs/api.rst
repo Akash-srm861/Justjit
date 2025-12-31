@@ -102,6 +102,62 @@ Retrieve the LLVM IR generated for a JIT-compiled function.
         ret double %fadd
       }
 
+inline_c
+--------
+
+Compile C/C++ code at runtime.
+
+.. py:function:: inline_c(code, lang='c', captured_vars=None, include_paths=None, dump_ir=False)
+
+   Compile C or C++ code and return callable functions.
+
+   :param code: C/C++ source code.
+   :type code: str
+   :param lang: Language - ``'c'`` or ``'c++'``.
+   :type lang: str
+   :param captured_vars: Variables to inject into C scope.
+   :type captured_vars: dict, optional
+   :param include_paths: Additional include directories.
+   :type include_paths: list, optional
+   :param dump_ir: Capture LLVM IR for inspection.
+   :type dump_ir: bool
+   :returns: Dict with ``'functions'`` list and each function name as callable.
+   :rtype: dict
+   :raises RuntimeError: If Clang support not available or compilation fails.
+
+   **Example:**
+
+   .. code-block:: python
+
+      from justjit import inline_c
+
+      result = inline_c('''
+          double square(double x) { return x * x; }
+      ''')
+      
+      print(result['square'](5.0))  # Output: 25.0
+
+dump_c_ir
+---------
+
+Get LLVM IR from the last ``inline_c`` compilation.
+
+.. py:function:: dump_c_ir()
+
+   Get the LLVM IR from the last inline_c compilation.
+
+   :returns: LLVM IR string, or None if no compilation done.
+   :rtype: str or None
+
+   **Example:**
+
+   .. code-block:: python
+
+      from justjit import inline_c, dump_c_ir
+
+      inline_c('int add(int a, int b) { return a + b; }')
+      print(dump_c_ir())
+
 JIT Class
 ---------
 
