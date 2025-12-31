@@ -161,16 +161,13 @@ nanobind_add_module(_core NB_STATIC NOMINSIZE
     src/bindings.cpp
     src/raii_wrapper.cpp
 )
-target_link_libraries(_core PRIVATE Python::Python)
+target_link_libraries(_core PRIVATE Python::Module)
 
 if(APPLE)
-  if(Python_LIBRARY)
-    message(STATUS "Linking Python library: ${Python_LIBRARY}")
-    target_link_libraries(_core PRIVATE ${Python_LIBRARY})
-  elseif(Python_LIBRARIES)
-    message(STATUS "Linking Python libraries: ${Python_LIBRARIES}")
-    target_link_libraries(_core PRIVATE ${Python_LIBRARIES})
-  endif()
+  # Do NOT link against libpython explicitly on macOS, as it causes 'delocate' to bundle 
+  # a second copy of the Python library, leading to "initialization of _core did not return an extension module".
+  # Instead, use dynamic lookup for undefined symbols (standard for Python extensions).
+  target_link_options(_core PRIVATE "LINKER:-undefined,dynamic_lookup")
 endif()
 
 # Pass embedded header paths to source code via compile definitions
