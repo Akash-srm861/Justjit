@@ -84,6 +84,12 @@ jobs:
           # Verify LLVM installation
           llvm-config --version || echo "llvm-config not found"
           ls -la /usr/lib/cmake/llvm/ || true
+          # Workaround: Create empty LLVMTestingAnnotations library if missing (Alpine LLVM packaging issue)
+          if [ ! -f /usr/lib/llvm17/lib/libLLVMTestingAnnotations.a ]; then
+            echo "Creating stub libLLVMTestingAnnotations.a"
+            ar rcs /tmp/libLLVMTestingAnnotations.a
+            cp /tmp/libLLVMTestingAnnotations.a /usr/lib/llvm17/lib/ 2>/dev/null || true
+          fi
         CIBW_ENVIRONMENT_LINUX: >-
           LLVM_DIR=/usr/lib/cmake/llvm
           Clang_DIR=/usr/lib/cmake/clang
