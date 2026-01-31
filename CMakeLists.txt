@@ -416,6 +416,15 @@ endif()
 # Install the Python extension
 install(TARGETS _core LIBRARY DESTINATION justjit)
 
+
+# Install vendor/libc-headers into the package (for inline_c bundled includes)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/libc-headers")
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vendor/libc-headers"
+            DESTINATION justjit/vendor
+            FILES_MATCHING PATTERN "*.h")
+    message(STATUS "Installing bundled libc headers to justjit/vendor/libc-headers")
+endif()
+
 # The LLVM shared library will be bundled by wheel repair tools:
 # - auditwheel (Linux) - bundles .so files
 # - delocate (macOS) - bundles .dylib files  
