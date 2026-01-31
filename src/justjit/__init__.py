@@ -1232,6 +1232,11 @@ def inline_c(code, lang="c", captured_vars=None, include_paths=None, dump_ir=Fal
         
         # Auto-add common include paths
         # 1. Current working directory
+         script_dir = os.path.dirname(os.path.abspath(__file__))
+        libc_path = os.path.join(script_dir, "vendor", "libc-headers")
+        if os.path.exists(libc_path):
+            _global_c_compiler.add_include_path(libc_path)
+            
         _global_c_compiler.add_include_path(os.getcwd())
         
         # 2. Try to get caller's script directory
