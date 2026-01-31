@@ -47,7 +47,7 @@ except ImportError:
     _HAS_CLANG = False
     InlineCCompiler = None
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 __all__ = ["JIT", "jit", "dump_ir", "create_jit_generator", "create_jit_coroutine", "InlineCCompiler", "inline_c", "dump_c_ir"]
 
 # Python code flags
@@ -1230,12 +1230,18 @@ def inline_c(code, lang="c", captured_vars=None, include_paths=None, dump_ir=Fal
         _global_jit_for_c = JIT()
         _global_c_compiler = InlineCCompiler(_global_jit_for_c)
         
-        # Auto-add common include paths
-        # 1. Current working directory
-         script_dir = os.path.dirname(os.path.abspath(__file__))
-        libc_path = os.path.join(script_dir, "vendor", "libc-headers")
-        if os.path.exists(libc_path):
-            _global_c_compiler.add_include_path(libc_path)
+        if os.path.exists(_libc_path):
+            # Bundled headers found - add to include path automatically
+            _global_c_compiler.add_include_path(_libc_path)
+        else:
+            # RAILGUARD WARNING: vendor folder missing from pip install
+            warnings.warn(
+                "JustJIT: Bundled libc headers not found at {0}. "
+                "The inline_c function may fail for standard includes like <stdio.h>. "
+                "Please reinstall justjit or provide include_paths manually.".format(_libc_path),
+                RuntimeWarning,
+                stacklevel=2
+            )
             
         _global_c_compiler.add_include_path(os.getcwd())
         
