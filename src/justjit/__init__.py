@@ -47,7 +47,7 @@ except ImportError:
     _HAS_CLANG = False
     InlineCCompiler = None
 
-__version__ = "0.1.6"
+__version__ = "0.1.5"
 __all__ = ["JIT", "jit", "dump_ir", "create_jit_generator", "create_jit_coroutine", "InlineCCompiler", "inline_c", "dump_c_ir"]
 
 # Python code flags
@@ -1230,24 +1230,36 @@ def inline_c(code, lang="c", captured_vars=None, include_paths=None, dump_ir=Fal
         _global_jit_for_c = JIT()
         _global_c_compiler = InlineCCompiler(_global_jit_for_c)
         
-        if os.path.exists(_libc_path):
-            # Bundled headers found - add to include path automatically
-            _global_c_compiler.add_include_path(_libc_path)
-        else:
-            # RAILGUARD WARNING: vendor folder missing from pip install
-            warnings.warn(
-                "JustJIT: Bundled libc headers not found at {0}. "
-                "The inline_c function may fail for standard includes like <stdio.h>. "
-                "Please reinstall justjit or provide include_paths manually.".format(_libc_path),
-                RuntimeWarning,
-                stacklevel=2
-            )
+        # ================================================================
+        # RAILGUARD: Auto-detect bundled libc headers from package
+        # ================================================================
+        try:
+            import warnings
+            package_dir = os.path.dirname(os.path.abspath(__file__))
+            libc_headers_path = os.path.join(package_dir, "vendor", "libc-headers")
             
+            if os.path.exists(libc_headers_path):
+                # Bundled headers found - add to include path automatically
+                _global_c_compiler.add_include_path(libc_headers_path)
+            else:
+                # RAILGUARD WARNING: vendor folder missing from pip install
+                warnings.warn(
+                    "JustJIT: Bundled libc headers not found. "
+                    "The inline_c function may fail for standard includes like <stdio.h>. "
+                    "Please reinstall justjit or provide include_paths manually.",
+                    RuntimeWarning,
+                    stacklevel=2
+                )
+        except Exception:
+            pass  # Silently continue if railguard check fails
+        
+        # Auto-add common include paths
+        # 1. Current working directory
         _global_c_compiler.add_include_path(os.getcwd())
         
         # 2. Try to get caller's script directory
-        import inspect
         try:
+            import inspect
             frame = inspect.currentframe()
             if frame and frame.f_back and frame.f_back.f_back:
                 caller_file = frame.f_back.f_back.f_globals.get('__file__')
