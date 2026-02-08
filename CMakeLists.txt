@@ -3,7 +3,9 @@ project(justjit)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
 # Find Python
 find_package(Python 3.13 COMPONENTS Interpreter Development.Module REQUIRED)
