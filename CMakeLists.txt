@@ -4,28 +4,27 @@ project(justjit)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# FIX: Allow external build type override (e.g., MinSizeRel from CI)
+# 1. FIX: Allow external build type override (e.g., MinSizeRel from CI)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Find Python
+# 2. Find Python & Nanobind
 find_package(Python 3.13 COMPONENTS Interpreter Development.Module REQUIRED)
-
-# Find nanobind
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
   OUTPUT_STRIP_TRAILING_WHITESPACE nanobind_ROOT)
 find_package(nanobind CONFIG REQUIRED)
 
-# LLVM configuration
+# 3. Find ZLIB (Required by LLVM)
+find_package(ZLIB REQUIRED)
+
+# 4. LLVM Configuration
 # Windows LibXml2 workaround
 if(WIN32)
     find_package(LibXml2 QUIET)
-    if(LibXml2_FOUND)
-        if(NOT TARGET LibXml2::LibXml2)
-            add_library(LibXml2::LibXml2 INTERFACE IMPORTED)
-        endif()
+    if(LibXml2_FOUND AND NOT TARGET LibXml2::LibXml2)
+        add_library(LibXml2::LibXml2 INTERFACE IMPORTED)
     endif()
 endif()
 
@@ -41,8 +40,6 @@ if(NOT TARGET LLVMTestingAnnotations)
 endif()
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
-message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-
 include_directories(${LLVM_INCLUDE_DIRS})
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
 add_definitions(${LLVM_DEFINITIONS_LIST})
@@ -51,36 +48,35 @@ if(WIN32)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS -D_SCL_SECURE_NO_WARNINGS)
 endif()
 
-# ============================================================================
-# CLANG CONFIGURATION (Modified to FORCE STATIC LINKING)
-# ============================================================================
+# 5. Clang Configuration (Force Static Components)
 find_package(Clang CONFIG HINTS ${LLVM_DIR}/../clang QUIET)
 if(Clang_FOUND)
     message(STATUS "Found Clang - enabling InlineCCompiler")
     add_definitions(-DJUSTJIT_HAS_CLANG=1)
     include_directories(${CLANG_INCLUDE_DIRS})
     
-    # FORCE STATIC: We manually list the component libraries.
-    # We do NOT check for 'clang-cpp' (the shared lib) anymore.
-    set(CLANG_LIBS
-        clangFrontend
-        clangCodeGen
-        clangSema
-        clangAST
-        clangParse
-        clangLex
-        clangAnalysis
-        clangEdit
-        clangSerialization
-        clangBasic
-        clangSupport
+    # We explicitly list components to avoid linking the huge 'clang-cpp' shared library
+    set(CLANG_WANTED_COMPONENTS
+        clangFrontend clangCodeGen clangSema clangAST clangParse clangLex
+        clangAnalysis clangEdit clangSerialization clangBasic clangSupport
     )
+    
+    set(CLANG_LIBS "")
+    foreach(comp ${CLANG_WANTED_COMPONENTS})
+        # Check for namespaced target (common in conda/static builds)
+        if(TARGET clang::${comp})
+            list(APPEND CLANG_LIBS clang::${comp})
+        # Check for non-namespaced target
+        elseif(TARGET ${comp})
+            list(APPEND CLANG_LIBS ${comp})
+        endif()
+    endforeach()
 else()
     message(STATUS "Clang not found - InlineCCompiler will be disabled")
     set(CLANG_LIBS "")
 endif()
 
-# Find Clang resource headers (stddef.h etc)
+# Find Clang/Libc++ Resource Headers
 if(Clang_FOUND)
     string(REGEX MATCH "^[0-9]+" LLVM_MAJOR_VERSION "${LLVM_PACKAGE_VERSION}")
     get_filename_component(LLVM_SOURCE_ROOT "${LLVM_DIR}/../../../.." ABSOLUTE)
@@ -119,11 +115,7 @@ if(Clang_FOUND)
     endforeach()
 endif()
 
-find_package(ZLIB REQUIRED)
-
-# ============================================================================
-# BUILD TARGET
-# ============================================================================
+# 6. Define Module Target
 nanobind_add_module(_core NB_STATIC NOMINSIZE
     src/jit_core.cpp
     src/bindings.cpp
@@ -131,10 +123,12 @@ nanobind_add_module(_core NB_STATIC NOMINSIZE
 )
 target_link_libraries(_core PRIVATE Python::Module)
 
+# Mac Linker Flags
 if(APPLE)
   target_link_options(_core PRIVATE "LINKER:-undefined,dynamic_lookup")
 endif()
 
+# Defines for embedded headers
 if(CLANG_RESOURCE_INCLUDE)
     target_compile_definitions(_core PRIVATE JUSTJIT_CLANG_RESOURCE_DIR="${CLANG_RESOURCE_INCLUDE}")
 endif()
@@ -189,25 +183,35 @@ endif()
 
 
 # ============================================================================
-# LLVM LINKING (Modified to FORCE STATIC LINKING)
+# 7. LLVM LINKING (FORCE STATIC & PLATFORM AWARE)
 # ============================================================================
-llvm_map_components_to_libnames(LLVM_LIBS
+
+# Common components for all platforms
+set(LLVM_COMPONENTS
     Core Support OrcJIT ExecutionEngine RuntimeDyld native Passes TransformUtils
     Analysis Target Object MC IRReader InstCombine ScalarOpts Vectorize IPO Linker
     BitWriter BitReader MCParser ObjCARCOpts AggressiveInstCombine CodeGen
     SelectionDAG AsmPrinter MIRParser GlobalISel DebugInfoDWARF DebugInfoCodeView
     DebugInfoMSF DebugInfoPDB Symbolize Demangle TextAPI BinaryFormat Remarks
     ProfileData Coverage LTO Extensions CFGuard Coroutines JITLink OrcTargetProcess
-    OrcShared WindowsDriver WindowsManifest
+    OrcShared
 )
+
+# Add Windows-specific components ONLY on Windows
+# FIX: This prevents "Target not found" errors on macOS/Linux
+if(WIN32)
+    list(APPEND LLVM_COMPONENTS WindowsDriver WindowsManifest)
+endif()
+
+# Map components to actual library names
+llvm_map_components_to_libnames(LLVM_LIBS ${LLVM_COMPONENTS})
 
 message(STATUS "LLVM libraries to link: ${LLVM_LIBS}")
 
-# FORCE STATIC: We link the mapped component libs directly on ALL platforms.
-# We Removed the logic that searched for LLVM_SHARED_LIB on Linux/macOS.
+# Link everything
 target_link_libraries(_core PRIVATE ${LLVM_LIBS})
 
-if(Clang_FOUND)
+if(Clang_FOUND AND CLANG_LIBS)
     target_link_libraries(_core PRIVATE ${CLANG_LIBS})
 endif()
 
@@ -224,10 +228,9 @@ elseif(APPLE)
     target_link_libraries(_core PRIVATE ${COREFOUNDATION_LIBRARY})
 endif()
 
+# Install
 install(TARGETS _core LIBRARY DESTINATION justjit)
-
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/libc-headers")
     install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vendor/libc-headers"
-            DESTINATION justjit/vendor
-            FILES_MATCHING PATTERN "*.h")
+            DESTINATION justjit/vendor FILES_MATCHING PATTERN "*.h")
 endif()
